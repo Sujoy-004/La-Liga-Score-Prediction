@@ -1,50 +1,40 @@
-# app.py
+# app.py - Fixed and production-ready Streamlit app for LaLiga predictions
 import streamlit as st
 import pandas as pd
 import numpy as np
+import os
+import joblib
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import accuracy_score, classification_report
-import joblib
-import os
 
 st.set_page_config(page_title="LaLiga Score / Result Predictor", layout="wide")
 
+# ------------------ Data loaders ------------------
 @st.cache_data(ttl=3600)
-def load_matches():
-    # load CSV present in repo root
-    if os.path.exists("matches_full.csv"):
-        return pd.read_csv("matches_full.csv")
-    else:
-        st.error("matches_full.csv not found in repo root.")
-        return pd.DataFrame()
-
-@st.cache_data(ttl=3600)
-def load_fixtures():
-    # load excel with upcoming fixtures
-    if os.path.exists("la-liga-2025-UTC.xlsx"):
-        return pd.read_excel("la-liga-2025-UTC.xlsx")
+def load_matches(path="matches_full.csv"):
+    if os.path.exists(path):
+        try:
+            return pd.read_csv(path)
+        except Exception as e:
+            st.error(f"Failed to read {path}: {e}")
+            return pd.DataFrame()
     else:
         return pd.DataFrame()
 
-# Replace your existing basic_prep() and build_features() with this code
+@st.cache_data(ttl=3600)
+def load_fixtures(path="la-liga-2025-UTC.xlsx"):
+    if os.path.exists(path):
+        try:
+            return pd.read_excel(path)
+        except Exception as e:
+            st.error(f"Failed to read {path}: {e}")
+            return pd.DataFrame()
+    else:
+        return pd.DataFrame()
 
-def _find_column(df, variants):
-    """
-    Return the actual column name from df that matches any name in variants (case-insensitive).
-    If none found, return None.
-    """
-    lower_map = {c.lower(): c for c in df.columns}
-    for v in variants:
-        key = v.lower()
-        if key in lower_map:
-            return lower_map[key]
-    return None
-
-# ---- Replace basic_prep() and build_features() with the following ----
-import numpy as np
-from sklearn.preprocessing import LabelEncoder
+# ------------------ Normalizers / Feature builders ------------------
 
 def _find_column(df, variants):
     lower_map = {c.lower(): c for c in df.columns}
@@ -53,6 +43,7 @@ def _find_column(df, variants):
         if key in lower_map:
             return lower_map[key]
     return None
+
 
 def _is_home_text(txt):
     if pd.isna(txt):
@@ -62,35 +53,35 @@ def _is_home_text(txt):
         return True
     if 'away' in s:
         return False
-    # neutral / unknown
+    # try simple heuristics for common notations
+    if s in ['h']:
+        return True
+    if s in ['a']:
+        return False
     return None
 
+
 def basic_prep(df):
+    """Normalize a DataFrame to match-level rows with columns: home, away, home_goals, away_goals, result (if available).
+    Handles both match-centric (Home Team / Away Team) and team-centric (team/opponent/venue/gf/ga) formats.
     """
-    Normalizes a dataframe to match-level rows with these columns:
-    ['home','away','home_goals','away_goals','result'] when possible.
-    Handles:
-      - Match-centric: columns like 'home','away','home_goals','away_goals' or 'Home Team'/'Away Team'
-      - Team-centric: columns like 'team','opponent','venue','gf','ga' (your matches_full.csv)
-    Raises KeyError with available columns if it cannot auto-detect.
-    """
+    if df is None or df.empty:
+        return pd.DataFrame()
     df = df.copy()
+
     cols = list(df.columns)
 
-    # candidate names
-    home_variants = ['home','home_team','home team','hometeam','Home Team','HomeTeam']
-    away_variants = ['away','away_team','away team','awayteam','Away Team','AwayTeam']
-    hg_variants = ['home_goals','fthg','home_goals_full','homegoals','hg']
-    ag_variants = ['away_goals','ftag','away_goals_full','awaygoals','ag']
-    # team-centric candidates (your CSV)
+    # candidate name lists
+    home_variants = ['home','home_team','home team','hometeam','home team name','home team name']
+    away_variants = ['away','away_team','away team','awayteam','away team name']
+    hg_variants = ['home_goals','fthg','homegoals','gf','gf_home','hg']
+    ag_variants = ['away_goals','ftag','awaygoals','ga','ga_away','ag']
     team_variants = ['team','team_name','side','club']
-    opponent_variants = ['opponent','opposing team','opponent_name','opponent team']
-    venue_variants = ['venue','location','home/away','home_away']  # 'Home' / 'Away' values
-    gf_variants = ['gf','goals_for','for']
-    ga_variants = ['ga','goals_against','against']
-    result_variants = ['result','ftr','FTR','match_result']
+    opponent_variants = ['opponent','opponent_name','opposing team']
+    venue_variants = ['venue','location','home/away','home_away']
+    result_variants = ['result','ftr','match_result']
 
-    # find columns (actual names)
+    # find actual cols
     home_col = _find_column(df, home_variants)
     away_col = _find_column(df, away_variants)
     hg_col = _find_column(df, hg_variants)
@@ -98,11 +89,9 @@ def basic_prep(df):
     team_col = _find_column(df, team_variants)
     opponent_col = _find_column(df, opponent_variants)
     venue_col = _find_column(df, venue_variants)
-    gf_col = _find_column(df, gf_variants)
-    ga_col = _find_column(df, ga_variants)
     res_col = _find_column(df, result_variants)
 
-    # CASE A: already match-centric (home/away present) OR Home Team / Away Team from Excel
+    # CASE 1: match-centric file (has home & away)
     if home_col and away_col:
         df = df.rename(columns={home_col: 'home', away_col: 'away'})
         if hg_col:
@@ -112,125 +101,105 @@ def basic_prep(df):
         if res_col:
             df = df.rename(columns={res_col: 'result'})
 
-    # CASE B: team-centric (your matches_full.csv): 'team', 'opponent', 'venue' and 'gf','ga'
-    elif team_col and opponent_col and venue_col and (gf_col or ga_col):
-        # ensure gf/ga present - use gf/ga names we found
+    # CASE 2: team-centric (team/opponent/venue/gf/ga)
+    elif team_col and opponent_col and venue_col and (hg_col or ag_col):
+        # need both gf and ga detection (try different combos)
+        gf_col = hg_col or _find_column(df, ['gf','goals_for'])
+        ga_col = ag_col or _find_column(df, ['ga','goals_against'])
         if not gf_col or not ga_col:
-            raise KeyError("Found team/opponent/venue but missing gf/ga columns. Available columns: " + str(cols))
+            raise KeyError("Found team/opponent/venue but missing goals columns. Columns: " + str(cols))
 
-        # standardize column names
-        df = df.rename(columns={
-            team_col: 'team',
-            opponent_col: 'opponent',
-            venue_col: 'venue',
-            gf_col: 'gf',
-            ga_col: 'ga'
-        })
+        df = df.rename(columns={team_col: 'team', opponent_col: 'opponent', venue_col: 'venue', gf_col: 'gf', ga_col: 'ga'})
 
-        # create home/away and goals per match
-        homes = []
-        aways = []
-        home_goals = []
-        away_goals = []
-        for i, row in df.iterrows():
-            venue_flag = _is_home_text(row.get('venue'))
-            # if venue text explicitly indicates Home -> team is home
-            if venue_flag is True:
-                home = row['team']
-                away = row['opponent']
-                hg = row['gf']
-                ag = row['ga']
-            elif venue_flag is False:
-                # team is away
-                home = row['opponent']
-                away = row['team']
-                # gf is goals for 'team' (away), so swap
-                hg = row['ga']
-                ag = row['gf']
+        homes, aways, hg_vals, ag_vals = [], [], [], []
+        for _, row in df.iterrows():
+            vflag = _is_home_text(row.get('venue'))
+            if vflag is True:
+                h = row['team']; a = row['opponent']; hg = row['gf']; ag = row['ga']
+            elif vflag is False:
+                h = row['opponent']; a = row['team']; hg = row['ga']; ag = row['gf']
             else:
-                # unknown venue: assume 'team' is home (best-effort) but mark it
-                home = row['team']
-                away = row['opponent']
-                hg = row['gf']
-                ag = row['ga']
+                # ambiguous: best-effort assume 'team' is home
+                h = row['team']; a = row['opponent']; hg = row['gf']; ag = row['ga']
 
-            homes.append(home)
-            aways.append(away)
-            # ensure numeric
+            homes.append(h); aways.append(a)
             try:
-                home_goals.append(float(hg) if not pd.isna(hg) else np.nan)
+                hg_vals.append(float(hg) if not pd.isna(hg) else np.nan)
             except Exception:
-                home_goals.append(np.nan)
+                hg_vals.append(np.nan)
             try:
-                away_goals.append(float(ag) if not pd.isna(ag) else np.nan)
+                ag_vals.append(float(ag) if not pd.isna(ag) else np.nan)
             except Exception:
-                away_goals.append(np.nan)
+                ag_vals.append(np.nan)
 
         df['home'] = homes
         df['away'] = aways
-        df['home_goals'] = home_goals
-        df['away_goals'] = away_goals
+        df['home_goals'] = hg_vals
+        df['away_goals'] = ag_vals
 
-        # compute 'result' from goals when possible
         def res_from_goals(r):
             try:
                 if pd.isna(r['home_goals']) or pd.isna(r['away_goals']):
                     return np.nan
-                if float(r['home_goals']) > float(r['away_goals']): return 'H'
-                if float(r['home_goals']) < float(r['away_goals']): return 'A'
+                if float(r['home_goals']) > float(r['away_goals']):
+                    return 'H'
+                if float(r['home_goals']) < float(r['away_goals']):
+                    return 'A'
                 return 'D'
             except Exception:
                 return np.nan
+
         df['result'] = df.apply(res_from_goals, axis=1)
 
     else:
-        # failed to auto-detect either format
-        raise KeyError(
-            "Auto-detection failed. Required match-level columns not found. "
-            f"Available columns: {cols}. "
-            "This app expects either match-centric columns like 'Home Team'/'Away Team' or team-centric 'team','opponent','venue','gf','ga'."
-        )
+        raise KeyError(f"Auto-detection failed. Available columns: {cols}")
 
-    # final cleanup: ensure 'home' and 'away' exist and drop rows missing them
+    # final cleanup
     if 'home' not in df.columns or 'away' not in df.columns:
-        raise KeyError("After normalization, 'home' and 'away' are still missing. Available cols: " + str(list(df.columns)))
+        raise KeyError("After normalization, 'home' and 'away' missing. Columns: " + str(list(df.columns)))
 
     df = df.dropna(subset=['home', 'away']).reset_index(drop=True)
     return df
 
+
 def build_features(df):
-    """
-    Build minimal features and label-encode teams.
-    Returns X (DataFrame of features) and df (dataframe with added ids).
-    """
+    """Return X, df_with_ids, and fitted LabelEncoder for teams."""
+    if df is None or df.empty:
+        return pd.DataFrame(), pd.DataFrame(), None
     df = df.copy()
     if 'home' not in df.columns or 'away' not in df.columns:
-        raise KeyError("build_features expects 'home' and 'away' columns. Run basic_prep() first.")
+        raise KeyError("build_features expects 'home' and 'away' columns")
 
-    # unify teams universe
-    teams = pd.Series(pd.concat([df['home'].astype(str), df['away'].astype(str)]).unique())
+    teams = pd.Series(pd.concat([df['home'].astype(str), df['away'].astype(str)])).unique()
+    teams = [str(t) for t in teams]
     le = LabelEncoder().fit(teams)
 
-    # map team names -> ids
     df['home_id'] = le.transform(df['home'].astype(str))
     df['away_id'] = le.transform(df['away'].astype(str))
 
-    # optional date -> month
     if 'date' in df.columns:
         df['date'] = pd.to_datetime(df['date'], errors='coerce')
         df['month'] = df['date'].dt.month.fillna(0).astype(int)
     else:
         df['month'] = 0
 
-    X = df[['home_id','away_id','month']].fillna(0).astype(int)
-    return X, df
+    X = df[['home_id', 'away_id', 'month']].fillna(0).astype(int)
+    return X, df, le
 
 
-def train_demo_model(X, y):
-    # quick, robust model - deterministic-ish
+# ------------------ Training helper ------------------
+
+def train_demo_model(X, y, df_feat=None):
     clf = RandomForestClassifier(n_estimators=150, max_depth=8, random_state=42, n_jobs=-1)
     clf.fit(X, y)
-    return clf
+
+    if df_feat is not None and 'home' in df_feat.columns and 'away' in df_feat.columns:
+        teams = pd.Series(pd.concat([df_feat['home'].astype(str), df_feat['away'].astype(str)])).unique()
+        teams = [str(t) for t in teams]
+        le = LabelEncoder().fit(teams)
+        return clf, le, list(teams)
+    return clf, None, None
+
 
 @st.cache_resource
 def load_model_if_exists(path="model.pkl"):
@@ -238,19 +207,84 @@ def load_model_if_exists(path="model.pkl"):
         try:
             return joblib.load(path)
         except Exception as e:
-            st.warning(f"Failed loading model.pkl: {e}")
+            st.warning(f"Failed loading {path}: {e}")
             return None
     return None
 
+
+# ------------------ App UI & logic ------------------
+
+def predict_fixtures_with_model(clf, le, team_list, fixtures_df):
+    """Return fixtures_df with predicted_result and predicted_prob columns added."""
+    fixtures_p = basic_prep(fixtures_df)
+    if fixtures_p.empty:
+        return fixtures_p
+
+    # month feature
+    if 'date' in fixtures_p.columns:
+        fixtures_p['date'] = pd.to_datetime(fixtures_p['date'], errors='coerce')
+        fixtures_p['month'] = fixtures_p['date'].dt.month.fillna(0).astype(int)
+    else:
+        fixtures_p['month'] = 0
+
+    # build mapping that preserves training ids
+    base_map = {}
+    if le is not None:
+        base_map = {str(t): int(i) for i, t in enumerate(le.classes_)}
+    elif team_list is not None:
+        base_map = {str(t): int(i) for i, t in enumerate(team_list)}
+
+    next_id = max(base_map.values()) + 1 if len(base_map) > 0 else 0
+
+    def map_team(t):
+        nonlocal next_id
+        s = str(t)
+        if s in base_map:
+            return base_map[s]
+        else:
+            base_map[s] = next_id
+            next_id += 1
+            return base_map[s]
+
+    fixtures_p['home_id'] = fixtures_p['home'].astype(str).apply(map_team)
+    fixtures_p['away_id'] = fixtures_p['away'].astype(str).apply(map_team)
+
+    Xf = fixtures_p[['home_id', 'away_id', 'month']].fillna(0).astype(int)
+
+    try:
+        if hasattr(clf, 'predict_proba'):
+            probs = clf.predict_proba(Xf)
+            pred_idx = probs.argmax(axis=1)
+            preds = clf.classes_[pred_idx]
+            max_probs = probs.max(axis=1)
+        else:
+            preds = clf.predict(Xf)
+            max_probs = [None] * len(preds)
+    except Exception as e:
+        # last-resort fallback: try re-fitting a small encoder union preserving training indices
+        raise RuntimeError(f"Prediction failed: {e}")
+
+    fixtures_p['predicted_result'] = preds
+    fixtures_p['predicted_prob'] = max_probs
+    return fixtures_p
+
+
 def main():
     st.title("LaLiga — Quick Deploy Predictor")
-    st.markdown("**Options:** Train a quick demo model (fast) or upload `model.pkl` to use a pre-trained model.")
+    st.markdown("**Options:** Inspect data, Train a demo model (fast) or Load model & predict.")
 
     df = load_matches()
     fixtures = load_fixtures()
 
     st.sidebar.header("Deploy controls")
     action = st.sidebar.radio("Action", ["Inspect data", "Train demo", "Load model & predict"])
+
+    if st.sidebar.checkbox("Show file column names (debug)"):
+        st.subheader("Columns in matches_full.csv (if present)")
+        st.write(list(df.columns))
+        st.subheader("Columns in la-liga-2025-UTC.xlsx (if present)")
+        st.write(list(fixtures.columns))
+        st.markdown("---")
 
     if action == "Inspect data":
         st.subheader("Matches (head)")
@@ -260,60 +294,145 @@ def main():
 
     elif action == "Train demo":
         st.subheader("Preparing training data")
-        df_p = basic_prep(df)
+        try:
+            df_p = basic_prep(df)
+        except Exception as e:
+            st.error(f"Auto-detection / normalization failed: {e}")
+            st.stop()
+
         if 'result' not in df_p.columns:
             st.error("No result column detected from historical data. Training aborted.")
-            return
-        X, df_feat = build_features(df_p)
+            st.stop()
+
+        X, df_feat, le = build_features(df_p)
         y = df_feat['result']
         st.write("Training shape:", X.shape)
+
         X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
         with st.spinner("Training RandomForest..."):
-            clf = train_demo_model(X_train, y_train)
+            clf, le_trained, team_list = train_demo_model(X_train, y_train, df_feat)
+
+        # Use the trained encoder (le_trained) if provided; otherwise fall back to le from build_features
+        le_final = le_trained if le_trained is not None else le
+        team_list_final = team_list if team_list is not None else (list(le_final.classes_) if le_final is not None else None)
+
+        # validation
         y_pred = clf.predict(X_val)
         acc = accuracy_score(y_val, y_pred)
         st.success(f"Training finished. Validation accuracy: {acc:.3f}")
         st.text("Classification report:")
         st.text(classification_report(y_val, y_pred))
-        # save model
-        joblib.dump((clf, df_feat[['home','away']].copy()), "model.pkl")
-        st.success("Saved model.pkl to repo root (visible in your repo after commit).")
+
+        # save model blob
+        model_blob = {'model': clf, 'le': le_final, 'team_list': team_list_final}
+        joblib.dump(model_blob, "model.pkl")
+        st.success("Saved model.pkl to working dir.")
+        with open("model.pkl", "rb") as f:
+            st.download_button("Download model.pkl", data=f.read(), file_name="model.pkl", mime="application/octet-stream")
+
+        # immediate prediction on fixtures
+        if fixtures is None or fixtures.empty:
+            st.warning("No fixtures file found to predict.")
+        else:
+            try:
+                fixtures_pred = predict_fixtures_with_model(clf, le_final, team_list_final, fixtures)
+            except Exception as e:
+                st.error(f"Predicting fixtures failed: {e}")
+                st.stop()
+
+            if fixtures_pred.empty:
+                st.warning("Fixtures normalization produced no rows.")
+            else:
+                st.markdown("### Predicted fixtures (sample)")
+                # choose display columns intelligently
+                display_cols = [c for c in ['Match Number', 'Round Number', 'Date', 'Location', 'home', 'away', 'predicted_result', 'predicted_prob'] if c in fixtures_pred.columns]
+                if not display_cols:
+                    display_cols = ['home', 'away', 'predicted_result', 'predicted_prob']
+                st.dataframe(fixtures_pred[display_cols].head(200))
+
+                st.markdown("### Predicted result distribution")
+                counts = fixtures_pred['predicted_result'].value_counts().reindex(['H','D','A']).fillna(0)
+                st.bar_chart(counts)
+
+                # show probability breakdown if available
+                if 'predicted_prob' in fixtures_pred.columns and fixtures_pred['predicted_prob'].notna().any():
+                    st.markdown("### Probabilities sample")
+                    st.dataframe(fixtures_pred[['home','away','predicted_prob']].head(50))
+
+                out_cols = [c for c in ['Match Number','Round Number','Date','home','away','predicted_result','predicted_prob'] if c in fixtures_pred.columns]
+                if not out_cols:
+                    out_cols = ['home','away','predicted_result','predicted_prob']
+                out_csv = fixtures_pred[out_cols].to_csv(index=False)
+                st.download_button("Download fixture predictions CSV", data=out_csv, file_name="la-liga-fixtures-predictions.csv", mime="text/csv")
 
     else:  # Load model & predict
-        st.subheader("Load existing model or train then load")
+        st.subheader("Load existing model or upload a model.pkl")
         uploaded = st.file_uploader("Upload model.pkl (optional)", type=['pkl','joblib'])
-        model = None
+        model_blob = None
         if uploaded is not None:
-            joblib.dump(joblib.load(uploaded), "model.pkl")  # save into working dir
-        model = load_model_if_exists("model.pkl")
-        if model is None:
-            st.warning("No model found. Use 'Train demo' first or upload model.pkl.")
-            return
-        # model can be either (clf, team_info) or clf
-        if isinstance(model, tuple):
-            clf = model[0]
+            # save uploaded file into working dir
+            with open("model_uploaded.pkl","wb") as f:
+                f.write(uploaded.read())
+            model_blob = load_model_if_exists("model_uploaded.pkl")
         else:
-            clf = model
+            model_blob = load_model_if_exists("model.pkl")
 
-        # prepare fixtures
-        fixtures_p = basic_prep(fixtures)
-        if fixtures_p.empty:
-            st.error("No fixtures detected in la-liga-2025-UTC.xlsx, or file missing.")
-            return
-        Xf, fixtures_feat = build_features(fixtures_p)
-        # Align label encoding: if model was trained on fewer teams, unknown teams will cause mismatch.
-        # We attempt to handle unknown team ids by clipping them into range:
-        max_team_id = Xf[['home_id','away_id']].max().max()
-        # If model expects fewer team ids, predictions may be meaningless. Still try.
+        if model_blob is None:
+            st.warning("No model found. Use 'Train demo' to create a model or upload a model.pkl.")
+            st.stop()
+
+        # unpack model_blob
+        clf = None; le = None; team_list = None
+        if isinstance(model_blob, dict):
+            clf = model_blob.get('model')
+            le = model_blob.get('le')
+            team_list = model_blob.get('team_list')
+        elif isinstance(model_blob, (list, tuple)):
+            # legacy tuple format: (clf, df_teams)
+            clf = model_blob[0]
+            try:
+                df_teams = model_blob[1]
+                if isinstance(df_teams, (pd.DataFrame, pd.Series)):
+                    team_list = list(pd.Series(pd.concat([df_teams.get('home', pd.Series([])), df_teams.get('away', pd.Series([]))])).unique())
+            except Exception:
+                team_list = None
+        else:
+            clf = model_blob
+
+        if clf is None:
+            st.error("Loaded object does not contain a valid model.")
+            st.stop()
+
+        # predict fixtures
         try:
-            preds = clf.predict(Xf)
+            fixtures_pred = predict_fixtures_with_model(clf, le, team_list, fixtures)
         except Exception as e:
             st.error(f"Prediction failed: {e}")
-            return
-        fixtures_p['predicted_result'] = preds
-        st.dataframe(fixtures_p[['home','away','predicted_result']].head(200))
-        st.markdown("### Pred counts")
-        st.write(fixtures_p['predicted_result'].value_counts())
+            st.stop()
+
+        if fixtures_pred.empty:
+            st.warning("No fixtures to predict (normalization empty).")
+        else:
+            st.markdown("### Predicted fixtures (loaded model)")
+            display_cols = [c for c in ['Match Number', 'Round Number', 'Date', 'Location', 'home', 'away', 'predicted_result', 'predicted_prob'] if c in fixtures_pred.columns]
+            if not display_cols:
+                display_cols = ['home','away','predicted_result','predicted_prob']
+            st.dataframe(fixtures_pred[display_cols].head(200))
+
+            st.markdown("### Predicted result distribution")
+            counts = fixtures_pred['predicted_result'].value_counts().reindex(['H','D','A']).fillna(0)
+            st.bar_chart(counts)
+
+            if 'predicted_prob' in fixtures_pred.columns and fixtures_pred['predicted_prob'].notna().any():
+                st.markdown("### Probabilities sample")
+                st.dataframe(fixtures_pred[['home','away','predicted_prob']].head(50))
+
+            out_cols = [c for c in ['Match Number','Round Number','Date','home','away','predicted_result','predicted_prob'] if c in fixtures_pred.columns]
+            if not out_cols:
+                out_cols = ['home','away','predicted_result','predicted_prob']
+            out_csv = fixtures_pred[out_cols].to_csv(index=False)
+            st.download_button("Download fixture predictions CSV", data=out_csv, file_name="la-liga-fixtures-predictions.csv", mime="text/csv")
+
 
 if __name__ == "__main__":
     main()
