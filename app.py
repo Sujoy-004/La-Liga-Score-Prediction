@@ -28,61 +28,104 @@ def load_fixtures():
     else:
         return pd.DataFrame()
 
-def basic_prep(df):
-    """Auto-detect home/away/team/goals columns and create simple features.
-       Returns df with columns ['home', 'away', 'home_goals', 'away_goals', 'result'] when possible.
+# Replace your existing basic_prep() and build_features() with this code
+
+def _find_column(df, variants):
     """
+    Return the actual column name from df that matches any name in variants (case-insensitive).
+    If none found, return None.
+    """
+    lower_map = {c.lower(): c for c in df.columns}
+    for v in variants:
+        key = v.lower()
+        if key in lower_map:
+            return lower_map[key]
+    return None
+
+def basic_prep(df):
+    """Auto-detect home/away/goals/result columns and normalize names to: home, away, home_goals, away_goals, result."""
     df = df.copy()
-    # common candidates
-    cols = list(df.columns.str.lower())
-    # heuristics
-    def find(colname_variants):
-        for v in colname_variants:
-            if v in cols:
-                return df.columns[cols.index(v)]
-        return None
+    # candidate names (add more if your notebook uses different names)
+    home_variants = ['home_team', 'home', 'homeTeam', 'home team', 'team_home', 'team home', 'HomeTeam']
+    away_variants = ['away_team', 'away', 'awayTeam', 'away team', 'team_away', 'team away', 'AwayTeam']
+    home_goals_variants = ['home_goals', 'fthg', 'home_goals_full', 'home_goals_ft', 'homegoals', 'FTHG']
+    away_goals_variants = ['away_goals', 'ftag', 'away_goals_full', 'away_goals_ft', 'awaygoals', 'FTAG']
+    result_variants = ['result', 'ftr', 'FTR', 'match_result', 'res']
 
-    home_col = find(['home_team', 'home', 'homeTeam', 'team_home'])
-    away_col = find(['away_team', 'away', 'awayTeam', 'team_away'])
-    hg_col = find(['home_goals', 'home_goals_full', 'fthg', 'home_goals_ft'])
-    ag_col = find(['away_goals', 'away_goals_full', 'ftag', 'away_goals_ft'])
+    # find actual columns
+    home_col = _find_column(df, home_variants)
+    away_col = _find_column(df, away_variants)
+    hg_col = _find_column(df, home_goals_variants)
+    ag_col = _find_column(df, away_goals_variants)
+    res_col = _find_column(df, result_variants)
 
-    if home_col: df.rename(columns={home_col: 'home'}, inplace=True)
-    if away_col: df.rename(columns={away_col: 'away'}, inplace=True)
-    if hg_col: df.rename(columns={hg_col: 'home_goals'}, inplace=True)
-    if ag_col: df.rename(columns={ag_col: 'away_goals'}, inplace=True)
+    rename_map = {}
+    if home_col:
+        rename_map[home_col] = 'home'
+    if away_col:
+        rename_map[away_col] = 'away'
+    if hg_col:
+        rename_map[hg_col] = 'home_goals'
+    if ag_col:
+        rename_map[ag_col] = 'away_goals'
+    if res_col:
+        rename_map[res_col] = 'result'
 
-    # compute result if goals exist
-    if 'home_goals' in df.columns and 'away_goals' in df.columns:
+    if rename_map:
+        df = df.rename(columns=rename_map)
+
+    # compute 'result' if goals exist but result doesn't
+    if ('home_goals' in df.columns) and ('away_goals' in df.columns) and ('result' not in df.columns):
         def r(row):
-            if row['home_goals'] > row['away_goals']: return 'H'
-            if row['home_goals'] < row['away_goals']: return 'A'
-            return 'D'
+            try:
+                if int(row['home_goals']) > int(row['away_goals']): return 'H'
+                if int(row['home_goals']) < int(row['away_goals']): return 'A'
+                return 'D'
+            except Exception:
+                return np.nan
         df['result'] = df.apply(r, axis=1)
 
-    # drop rows missing critical fields
-    if 'home' in df.columns and 'away' in df.columns:
-        df = df.dropna(subset=['home','away'])
+    # final check: we must have 'home' and 'away' for features/training
+    if 'home' not in df.columns or 'away' not in df.columns:
+        # helpful error: list available columns so user can see what's wrong
+        available = list(df.columns)
+        raise KeyError(
+            "Required columns 'home' and 'away' not found after auto-detection. "
+            f"Available columns: {available}. "
+            "If your file uses different column names, add them to the detection lists in basic_prep()."
+        )
+
+    # drop rows with missing team names
+    df = df.dropna(subset=['home','away']).reset_index(drop=True)
+
     return df
 
 def build_features(df):
-    """Minimal features: encode home & away teams to integers and use year/season if present."""
+    """Encode teams to integer ids and create minimal features. Returns (X, df_with_features)."""
     df = df.copy()
-    le_home = LabelEncoder()
-    le_away = LabelEncoder()
-    # joint encoding ensures id consistency
-    teams = pd.Series(pd.concat([df['home'], df['away']]).unique())
+
+    # ensure basic_prep has been applied (home/away present)
+    if 'home' not in df.columns or 'away' not in df.columns:
+        raise KeyError("build_features expects columns 'home' and 'away'. Run basic_prep() first.")
+
+    # create a single team universe so encoding is consistent
+    teams = pd.Series(pd.concat([df['home'], df['away']]).astype(str).unique())
     le = LabelEncoder().fit(teams)
-    df['home_id'] = le.transform(df['home'])
-    df['away_id'] = le.transform(df['away'])
-    # optionally add year/month if date exists
+
+    # map teams - if a team in df is unknown to le, we fit on all present teams so this is safe
+    df['home_id'] = le.transform(df['home'].astype(str))
+    df['away_id'] = le.transform(df['away'].astype(str))
+
+    # optional date -> month feature
     if 'date' in df.columns:
         df['date'] = pd.to_datetime(df['date'], errors='coerce')
         df['month'] = df['date'].dt.month.fillna(0).astype(int)
     else:
         df['month'] = 0
-    X = df[['home_id','away_id','month']].fillna(0)
+
+    X = df[['home_id','away_id','month']].fillna(0).astype(int)
     return X, df
+
 
 def train_demo_model(X, y):
     # quick, robust model - deterministic-ish
