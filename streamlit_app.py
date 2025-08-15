@@ -1,298 +1,325 @@
-import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime
-import plotly.express as px
-import plotly.graph_objects as go
-from model import LaLigaPredictor
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+import pickle
 import warnings
 warnings.filterwarnings('ignore')
 
-# Page config
-st.set_page_config(
-    page_title="La Liga Score Predictor",
-    page_icon="⚽",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+class LaLigaPredictor:
+    def __init__(self):
+        self.model_home = None
+        self.model_away = None
+        self.le_home = LabelEncoder()
+        self.le_away = LabelEncoder()
+        self.teams = []
+        
+    def load_data(self, csv_path='matches_full.csv', excel_path='la-liga-2025-UTC.xlsx'):
+        """Load data from CSV or Excel file"""
+        try:
+            # Try loading CSV first
+            self.df = pd.read_csv(csv_path)
+            print(f"Loaded {len(self.df)} records from CSV")
+        except:
+            try:
+                # Try loading Excel
+                self.df = pd.read_excel(excel_path)
+                print(f"Loaded {len(self.df)} records from Excel")
+            except Exception as e:
+                print(f"Error loading data: {e}")
+                return False
+        
+        return True
+    
+    def preprocess_data(self):
+        """Preprocess the data for training"""
+        # Convert date column if exists
+        date_cols = ['Date', 'date', 'DATE', 'Match Date', 'match_date']
+        for col in date_cols:
+            if col in self.df.columns:
+                try:
+                    self.df['Date'] = pd.to_datetime(self.df[col])
+                    break
+                except:
+                    continue
+            
+        # Handle different column naming conventions - be more flexible
+        home_col = None
+        away_col = None
+        home_goals_col = None
+        away_goals_col = None
+        
+        # Check for home team column
+        home_options = ['HomeTeam', 'home_team', 'Home', 'HOME', 'Home Team', 'home']
+        for col in self.df.columns:
+            if col in home_options or 'home' in col.lower():
+                home_col = col
+                break
+                
+        # Check for away team column  
+        away_options = ['AwayTeam', 'away_team', 'Away', 'AWAY', 'Away Team', 'away']
+        for col in self.df.columns:
+            if col in away_options or 'away' in col.lower():
+                away_col = col
+                break
+                
+        # Check for home goals column
+        home_goal_options = ['FTHG', 'home_score', 'HomeScore', 'Home Goals', 'home_goals', 'HG']
+        for col in self.df.columns:
+            if col in home_goal_options or ('home' in col.lower() and ('goal' in col.lower() or 'score' in col.lower())):
+                home_goals_col = col
+                break
+                
+        # Check for away goals column
+        away_goal_options = ['FTAG', 'away_score', 'AwayScore', 'Away Goals', 'away_goals', 'AG']
+        for col in self.df.columns:
+            if col in away_goal_options or ('away' in col.lower() and ('goal' in col.lower() or 'score' in col.lower())):
+                away_goals_col = col
+                break
+        
+        # If columns not found, print available columns for debugging
+        if not all([home_col, away_col, home_goals_col, away_goals_col]):
+            print("Available columns:", self.df.columns.tolist())
+            print(f"Found - Home: {home_col}, Away: {away_col}, Home Goals: {home_goals_col}, Away Goals: {away_goals_col}")
+            
+            # Try to use first few columns as fallback
+            cols = self.df.columns.tolist()
+            if len(cols) >= 4:
+                home_col = home_col or cols[0]
+                away_col = away_col or cols[1] 
+                home_goals_col = home_goals_col or cols[2]
+                away_goals_col = away_goals_col or cols[3]
+                print(f"Using fallback columns: {home_col}, {away_col}, {home_goals_col}, {away_goals_col}")
+        
+        # Standardize column names
+        column_mapping = {}
+        if home_col:
+            column_mapping[home_col] = 'HomeTeam'
+        if away_col:
+            column_mapping[away_col] = 'AwayTeam'
+        if home_goals_col:
+            column_mapping[home_goals_col] = 'FTHG'
+        if away_goals_col:
+            column_mapping[away_goals_col] = 'FTAG'
+            
+        self.df = self.df.rename(columns=column_mapping)
+        
+        # Check which essential columns actually exist after renaming
+        essential_cols = ['HomeTeam', 'AwayTeam', 'FTHG', 'FTAG']
+        existing_cols = [col for col in essential_cols if col in self.df.columns]
+        
+        if len(existing_cols) < 4:
+            print(f"Warning: Only found {len(existing_cols)} essential columns: {existing_cols}")
+            # Don't fail here, just work with what we have
+        
+        # Remove rows with missing essential data only for columns that exist
+        if existing_cols:
+            self.df = self.df.dropna(subset=existing_cols)
+        
+        # Make sure we have team data
+        if 'HomeTeam' in self.df.columns and 'AwayTeam' in self.df.columns:
+            # Encode team names
+            all_teams = list(set(list(self.df['HomeTeam'].unique()) + list(self.df['AwayTeam'].unique())))
+            self.teams = sorted([str(team) for team in all_teams if pd.notna(team)])
+            
+            # Fit label encoders on all teams
+            if self.teams:
+                self.le_home.fit(self.teams)
+                self.le_away.fit(self.teams)
+                
+                self.df['HomeTeam_encoded'] = self.le_home.transform(self.df['HomeTeam'])
+                self.df['AwayTeam_encoded'] = self.le_away.transform(self.df['AwayTeam'])
+            else:
+                raise ValueError("No valid teams found in data")
+        else:
+            raise ValueError("Home and Away team columns not found")
+        
+        # Create additional features
+        if 'Date' in self.df.columns:
+            self.df['DayOfWeek'] = self.df['Date'].dt.dayofweek
+            self.df['Month'] = self.df['Date'].dt.month
+        else:
+            self.df['DayOfWeek'] = 5  # Default to Friday
+            self.df['Month'] = 3     # Default to March
+        
+        # Calculate team statistics (rolling averages) only if we have score data
+        if 'FTHG' in self.df.columns and 'FTAG' in self.df.columns:
+            self.calculate_team_stats()
+        else:
+            # Create dummy stats
+            self.df['home_avg_goals'] = 1.5
+            self.df['away_avg_goals'] = 1.0
+            self.df['home_avg_conceded'] = 1.2
+            self.df['away_avg_conceded'] = 1.3
+        
+        print("Data preprocessing completed")
+        
+    def calculate_team_stats(self):
+        """Calculate team statistics for better predictions"""
+        # Sort by date if available
+        if 'Date' in self.df.columns:
+            self.df = self.df.sort_values('Date')
+        
+        # Initialize stats columns
+        self.df['home_avg_goals'] = 0.0
+        self.df['away_avg_goals'] = 0.0
+        self.df['home_avg_conceded'] = 0.0
+        self.df['away_avg_conceded'] = 0.0
+        
+        # Calculate rolling averages (last 5 games)
+        for i in range(len(self.df)):
+            home_team = self.df.iloc[i]['HomeTeam']
+            away_team = self.df.iloc[i]['AwayTeam']
+            
+            # Get recent home team performance
+            recent_home_games = self.df.iloc[:i]
+            home_home_games = recent_home_games[recent_home_games['HomeTeam'] == home_team].tail(5)
+            home_away_games = recent_home_games[recent_home_games['AwayTeam'] == home_team].tail(5)
+            
+            # Calculate home team stats
+            if not home_home_games.empty:
+                self.df.iloc[i, self.df.columns.get_loc('home_avg_goals')] = home_home_games['FTHG'].mean()
+                self.df.iloc[i, self.df.columns.get_loc('home_avg_conceded')] = home_home_games['FTAG'].mean()
+            
+            # Get recent away team performance  
+            away_home_games = recent_home_games[recent_home_games['HomeTeam'] == away_team].tail(5)
+            away_away_games = recent_home_games[recent_home_games['AwayTeam'] == away_team].tail(5)
+            
+            # Calculate away team stats
+            if not away_away_games.empty:
+                self.df.iloc[i, self.df.columns.get_loc('away_avg_goals')] = away_away_games['FTAG'].mean()
+                self.df.iloc[i, self.df.columns.get_loc('away_avg_conceded')] = away_away_games['FTHG'].mean()
+    
+    def train_models(self):
+        """Train the prediction models"""
+        # Features for training
+        feature_cols = [
+            'HomeTeam_encoded', 'AwayTeam_encoded', 
+            'DayOfWeek', 'Month',
+            'home_avg_goals', 'away_avg_goals',
+            'home_avg_conceded', 'away_avg_conceded'
+        ]
+        
+        # Make sure we have target columns
+        if 'FTHG' not in self.df.columns or 'FTAG' not in self.df.columns:
+            print("Warning: Score columns not found. Using dummy data for training.")
+            # Create dummy scores for demo purposes
+            self.df['FTHG'] = np.random.poisson(1.5, len(self.df))
+            self.df['FTAG'] = np.random.poisson(1.0, len(self.df))
+        
+        X = self.df[feature_cols].fillna(0)
+        y_home = self.df['FTHG']
+        y_away = self.df['FTAG']
+        
+        # Split data
+        X_train, X_test, y_home_train, y_home_test = train_test_split(
+            X, y_home, test_size=0.2, random_state=42
+        )
+        _, _, y_away_train, y_away_test = train_test_split(
+            X, y_away, test_size=0.2, random_state=42
+        )
+        
+        # Train models
+        self.model_home = RandomForestRegressor(n_estimators=100, random_state=42, max_depth=10)
+        self.model_away = RandomForestRegressor(n_estimators=100, random_state=42, max_depth=10)
+        
+        self.model_home.fit(X_train, y_home_train)
+        self.model_away.fit(X_train, y_away_train)
+        
+        # Evaluate models
+        home_pred = self.model_home.predict(X_test)
+        away_pred = self.model_away.predict(X_test)
+        
+        print(f"Home goals MSE: {mean_squared_error(y_home_test, home_pred):.3f}")
+        print(f"Away goals MSE: {mean_squared_error(y_away_test, away_pred):.3f}")
+        print(f"Home goals MAE: {mean_absolute_error(y_home_test, home_pred):.3f}")
+        print(f"Away goals MAE: {mean_absolute_error(y_away_test, away_pred):.3f}")
+        
+        print("Model training completed")
+    
+    def predict_match(self, home_team, away_team):
+        """Predict the score for a specific match"""
+        if self.model_home is None or self.model_away is None:
+            raise ValueError("Models not trained yet")
+        
+        if home_team not in self.teams or away_team not in self.teams:
+            raise ValueError("Team not found in training data")
+        
+        # Encode teams
+        home_encoded = self.le_home.transform([home_team])[0]
+        away_encoded = self.le_away.transform([away_team])[0]
+        
+        # Get team stats (use overall averages as approximation)
+        home_stats = self.df[self.df['HomeTeam'] == home_team]
+        away_stats = self.df[self.df['AwayTeam'] == away_team]
+        
+        home_avg_goals = home_stats['FTHG'].mean() if not home_stats.empty and 'FTHG' in self.df.columns else 1.5
+        away_avg_goals = away_stats['FTAG'].mean() if not away_stats.empty and 'FTAG' in self.df.columns else 1.0
+        home_avg_conceded = home_stats['FTAG'].mean() if not home_stats.empty and 'FTAG' in self.df.columns else 1.2
+        away_avg_conceded = away_stats['FTHG'].mean() if not away_stats.empty and 'FTHG' in self.df.columns else 1.3
+        
+        # Create feature vector
+        features = np.array([[
+            home_encoded, away_encoded, 5, 3,  # Saturday, March
+            home_avg_goals, away_avg_goals,
+            home_avg_conceded, away_avg_conceded
+        ]])
+        
+        # Predict scores
+        home_score = max(0, round(self.model_home.predict(features)[0]))
+        away_score = max(0, round(self.model_away.predict(features)[0]))
+        
+        return int(home_score), int(away_score)
+    
+    def save_model(self, filename='laliga_model.pkl'):
+        """Save the trained model"""
+        model_data = {
+            'model_home': self.model_home,
+            'model_away': self.model_away,
+            'le_home': self.le_home,
+            'le_away': self.le_away,
+            'teams': self.teams
+        }
+        
+        with open(filename, 'wb') as f:
+            pickle.dump(model_data, f)
+        
+        print(f"Model saved to {filename}")
+    
+    def load_model(self, filename='laliga_model.pkl'):
+        """Load a pre-trained model"""
+        try:
+            with open(filename, 'rb') as f:
+                model_data = pickle.load(f)
+            
+            self.model_home = model_data['model_home']
+            self.model_away = model_data['model_away']
+            self.le_home = model_data['le_home']
+            self.le_away = model_data['le_away']
+            self.teams = model_data['teams']
+            
+            print(f"Model loaded from {filename}")
+            return True
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            return False
 
-# Custom CSS
-st.markdown("""
-<style>
-    .main-header {
-        font-size: 3rem;
-        font-weight: bold;
-        text-align: center;
-        color: #1f4e79;
-        margin-bottom: 2rem;
-    }
-    .prediction-box {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 2rem;
-        border-radius: 15px;
-        color: white;
-        text-align: center;
-        margin: 1rem 0;
-    }
-    .team-stats {
-        background: #f8f9fa;
-        padding: 1rem;
-        border-radius: 10px;
-        margin: 0.5rem 0;
-    }
-    .loading {
-        text-align: center;
-        color: #666;
-        font-style: italic;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-@st.cache_resource
-def initialize_predictor():
-    """Initialize and train the predictor model"""
+if __name__ == "__main__":
+    # Example usage
     predictor = LaLigaPredictor()
-    
-    # Try to load pre-trained model first
-    if predictor.load_model('laliga_model.pkl'):
-        st.success("✅ Pre-trained model loaded successfully!")
-        return predictor
-    
-    # If no pre-trained model, train new one
-    st.info("🔄 Training new model... This may take a moment.")
     
     if predictor.load_data():
         predictor.preprocess_data()
         predictor.train_models()
-        # Save model for future use
-        predictor.save_model('laliga_model.pkl')
-        st.success("✅ Model trained and ready!")
-        return predictor
-    else:
-        st.error("❌ Failed to load data")
-        return None
-
-def display_team_comparison(predictor, home_team, away_team):
-    """Display team statistics comparison"""
-    df = predictor.df
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader(f"📊 {home_team} (Home)")
-        home_home_games = df[df['HomeTeam'] == home_team]
-        home_away_games = df[df['AwayTeam'] == home_team]
+        predictor.save_model()
         
-        if not home_home_games.empty:
-            home_goals_avg = home_home_games['FTHG'].mean()
-            home_conceded_avg = home_home_games['FTAG'].mean()
-            st.metric("Avg Goals Scored (Home)", f"{home_goals_avg:.2f}")
-            st.metric("Avg Goals Conceded (Home)", f"{home_conceded_avg:.2f}")
-            st.metric("Home Games Played", len(home_home_games))
-    
-    with col2:
-        st.subheader(f"📊 {away_team} (Away)")
-        away_home_games = df[df['HomeTeam'] == away_team]
-        away_away_games = df[df['AwayTeam'] == away_team]
-        
-        if not away_away_games.empty:
-            away_goals_avg = away_away_games['FTAG'].mean()
-            away_conceded_avg = away_away_games['FTHG'].mean()
-            st.metric("Avg Goals Scored (Away)", f"{away_goals_avg:.2f}")
-            st.metric("Avg Goals Conceded (Away)", f"{away_conceded_avg:.2f}")
-            st.metric("Away Games Played", len(away_away_games))
-
-def display_head_to_head(predictor, home_team, away_team):
-    """Display head-to-head statistics"""
-    df = predictor.df
-    
-    # Get head-to-head matches
-    h2h = df[((df['HomeTeam'] == home_team) & (df['AwayTeam'] == away_team)) |
-             ((df['HomeTeam'] == away_team) & (df['AwayTeam'] == home_team))]
-    
-    if not h2h.empty:
-        st.subheader("🆚 Head-to-Head Record")
-        
-        # Calculate wins
-        home_wins = len(h2h[((h2h['HomeTeam'] == home_team) & (h2h['FTHG'] > h2h['FTAG'])) |
-                           ((h2h['AwayTeam'] == home_team) & (h2h['FTAG'] > h2h['FTHG']))])
-        
-        away_wins = len(h2h[((h2h['HomeTeam'] == away_team) & (h2h['FTHG'] > h2h['FTAG'])) |
-                           ((h2h['AwayTeam'] == away_team) & (h2h['FTAG'] > h2h['FTHG']))])
-        
-        draws = len(h2h[h2h['FTHG'] == h2h['FTAG']])
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric(f"{home_team} Wins", home_wins)
-        with col2:
-            st.metric("Draws", draws)
-        with col3:
-            st.metric(f"{away_team} Wins", away_wins)
-        
-        # Show recent matches
-        st.subheader("📅 Recent Matches")
-        recent_h2h = h2h.tail(5)
-        
-        display_cols = ['HomeTeam', 'AwayTeam', 'FTHG', 'FTAG']
-        if 'Date' in recent_h2h.columns:
-            display_cols = ['Date'] + display_cols
-            
-        st.dataframe(recent_h2h[display_cols], use_container_width=True)
-
-def main():
-    st.markdown('<div class="main-header">⚽ La Liga Score Predictor</div>', unsafe_allow_html=True)
-    
-    # Initialize predictor
-    with st.spinner("Loading predictor model..."):
-        predictor = initialize_predictor()
-    
-    if predictor is None:
-        st.error("Failed to initialize predictor. Please check your data files.")
-        st.stop()
-    
-    # Sidebar
-    st.sidebar.header("🎯 Match Prediction")
-    
-    # Team selection
-    teams = predictor.teams
-    
-    if not teams:
-        st.error("No teams found in data.")
-        st.stop()
-    
-    # Add popular matchups for quick selection
-    st.sidebar.subheader("🔥 Popular Matchups")
-    popular_matches = [
-        ("Real Madrid", "Barcelona"),
-        ("Atletico Madrid", "Real Madrid"),
-        ("Barcelona", "Atletico Madrid"),
-        ("Real Madrid", "Sevilla"),
-        ("Barcelona", "Valencia")
-    ]
-    
-    selected_matchup = st.sidebar.selectbox(
-        "Quick Select",
-        ["Custom Selection"] + [f"{h} vs {a}" for h, a in popular_matches if h in teams and a in teams]
-    )
-    
-    if selected_matchup != "Custom Selection":
-        home_default, away_default = selected_matchup.split(" vs ")
-    else:
-        home_default, away_default = teams[0], teams[1] if len(teams) > 1 else teams[0]
-    
-    home_team = st.sidebar.selectbox(
-        "🏠 Home Team", 
-        teams, 
-        index=teams.index(home_default) if home_default in teams else 0
-    )
-    
-    away_team = st.sidebar.selectbox(
-        "✈️ Away Team", 
-        teams,
-        index=teams.index(away_default) if away_default in teams else 0
-    )
-    
-    # Predict button
-    if st.sidebar.button("🎯 Predict Score", type="primary", use_container_width=True):
-        if home_team == away_team:
-            st.sidebar.error("Please select different teams!")
-        else:
-            try:
-                with st.spinner("Calculating prediction..."):
-                    home_score, away_score = predictor.predict_match(home_team, away_team)
-                
-                # Display prediction
-                col1, col2, col3 = st.columns([1, 2, 1])
-                
-                with col2:
-                    # Determine result
-                    if home_score > away_score:
-                        result = f"{home_team} Win"
-                        result_color = "#28a745"
-                    elif away_score > home_score:
-                        result = f"{away_team} Win"
-                        result_color = "#dc3545"
-                    else:
-                        result = "Draw"
-                        result_color = "#ffc107"
-                    
-                    st.markdown(f"""
-                    <div class="prediction-box">
-                        <h2>🎯 Predicted Score</h2>
-                        <h1 style="font-size: 3rem; margin: 1rem 0;">{home_team} {home_score} - {away_score} {away_team}</h1>
-                        <h3 style="color: {result_color}; margin-top: 1rem;">{result}</h3>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                # Display team comparisons
-                st.markdown("---")
-                display_team_comparison(predictor, home_team, away_team)
-                
-                # Display head-to-head
-                st.markdown("---")
-                display_head_to_head(predictor, home_team, away_team)
-                
-            except Exception as e:
-                st.error(f"Prediction failed: {str(e)}")
-                st.info("Make sure both teams exist in the training data.")
-    
-    # Display recent matches
-    st.markdown("---")
-    st.subheader("📊 Recent La Liga Matches")
-    
-    if hasattr(predictor, 'df') and not predictor.df.empty:
-        recent_matches = predictor.df.tail(15).copy()
-        
-        # Add result column
-        recent_matches['Result'] = recent_matches.apply(
-            lambda row: f"{row['FTHG']}-{row['FTAG']}", axis=1
-        )
-        
-        display_cols = ['HomeTeam', 'AwayTeam', 'Result']
-        if 'Date' in recent_matches.columns:
-            display_cols = ['Date'] + display_cols
-            recent_matches['Date'] = recent_matches['Date'].dt.strftime('%Y-%m-%d')
-        
-        st.dataframe(
-            recent_matches[display_cols].rename(columns={
-                'HomeTeam': 'Home Team',
-                'AwayTeam': 'Away Team'
-            }),
-            use_container_width=True
-        )
-    
-    # Model information
-    with st.expander("ℹ️ About the Model"):
-        st.markdown("""
-        ### 🤖 La Liga Score Prediction Model
-        
-        This advanced machine learning model uses **Random Forest Regression** to predict La Liga match scores.
-        
-        **📈 Features Used:**
-        - Team historical performance
-        - Home/Away advantage patterns
-        - Rolling averages (last 5 games)
-        - Seasonal timing factors
-        - Head-to-head statistics
-        
-        **🎯 Model Performance:**
-        - Trained on historical La Liga data
-        - Uses ensemble learning for better accuracy
-        - Considers team form and recent performance
-        
-        **⚠️ Disclaimer:**
-        Predictions are for entertainment purposes only. Football is unpredictable! 
-        """)
-    
-    # Footer
-    st.markdown("---")
-    st.markdown(
-        "<div style='text-align: center; color: #666; padding: 1rem;'>"
-        "⚽ Made with ❤️ for La Liga fans | Predictions for entertainment only"
-        "</div>",
-        unsafe_allow_html=True
-    )
-
-if __name__ == "__main__":
-    main()
+        # Test prediction
+        try:
+            if len(predictor.teams) >= 2:
+                team1, team2 = predictor.teams[0], predictor.teams[1]
+                home_score, away_score = predictor.predict_match(team1, team2)
+                print(f"\nPredicted Score: {team1} {home_score} - {away_score} {team2}")
+        except Exception as e:
+            print(f"Prediction error: {e}")
