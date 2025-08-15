@@ -10,6 +10,28 @@ from sklearn.preprocessing import LabelEncoder
 import warnings
 warnings.filterwarnings('ignore')
 
+import streamlit as st
+import pandas as pd
+
+# Debug data loading
+try:
+    df = pd.read_csv('matches_full.csv')
+    st.write(f"Data loaded successfully: {df.shape}")
+    st.write("Columns:", df.columns.tolist())
+    
+    # Check for team columns
+    if 'home_team' in df.columns:
+        teams = df['home_team'].unique()
+        st.write(f"Found {len(teams)} teams")
+    elif 'Home' in df.columns:
+        teams = df['Home'].unique()
+        st.write(f"Found {len(teams)} teams")
+    else:
+        st.error("No team column found. Available columns:", df.columns.tolist())
+        
+except Exception as e:
+    st.error(f"Error loading data: {e}")
+
 # Page config
 st.set_page_config(
     page_title="La Liga Score Predictor",
