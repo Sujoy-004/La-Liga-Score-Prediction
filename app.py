@@ -42,81 +42,180 @@ def _find_column(df, variants):
             return lower_map[key]
     return None
 
-def basic_prep(df):
-    """Auto-detect home/away/goals/result columns and normalize names to: home, away, home_goals, away_goals, result."""
-    df = df.copy()
-    # candidate names (add more if your notebook uses different names)
-    home_variants = ['home_team', 'home', 'homeTeam', 'home team', 'team_home', 'team home', 'HomeTeam']
-    away_variants = ['away_team', 'away', 'awayTeam', 'away team', 'team_away', 'team away', 'AwayTeam']
-    home_goals_variants = ['home_goals', 'fthg', 'home_goals_full', 'home_goals_ft', 'homegoals', 'FTHG']
-    away_goals_variants = ['away_goals', 'ftag', 'away_goals_full', 'away_goals_ft', 'awaygoals', 'FTAG']
-    result_variants = ['result', 'ftr', 'FTR', 'match_result', 'res']
+# ---- Replace basic_prep() and build_features() with the following ----
+import numpy as np
+from sklearn.preprocessing import LabelEncoder
 
-    # find actual columns
+def _find_column(df, variants):
+    lower_map = {c.lower(): c for c in df.columns}
+    for v in variants:
+        key = v.lower()
+        if key in lower_map:
+            return lower_map[key]
+    return None
+
+def _is_home_text(txt):
+    if pd.isna(txt):
+        return None
+    s = str(txt).strip().lower()
+    if 'home' in s:
+        return True
+    if 'away' in s:
+        return False
+    # neutral / unknown
+    return None
+
+def basic_prep(df):
+    """
+    Normalizes a dataframe to match-level rows with these columns:
+    ['home','away','home_goals','away_goals','result'] when possible.
+    Handles:
+      - Match-centric: columns like 'home','away','home_goals','away_goals' or 'Home Team'/'Away Team'
+      - Team-centric: columns like 'team','opponent','venue','gf','ga' (your matches_full.csv)
+    Raises KeyError with available columns if it cannot auto-detect.
+    """
+    df = df.copy()
+    cols = list(df.columns)
+
+    # candidate names
+    home_variants = ['home','home_team','home team','hometeam','Home Team','HomeTeam']
+    away_variants = ['away','away_team','away team','awayteam','Away Team','AwayTeam']
+    hg_variants = ['home_goals','fthg','home_goals_full','homegoals','hg']
+    ag_variants = ['away_goals','ftag','away_goals_full','awaygoals','ag']
+    # team-centric candidates (your CSV)
+    team_variants = ['team','team_name','side','club']
+    opponent_variants = ['opponent','opposing team','opponent_name','opponent team']
+    venue_variants = ['venue','location','home/away','home_away']  # 'Home' / 'Away' values
+    gf_variants = ['gf','goals_for','for']
+    ga_variants = ['ga','goals_against','against']
+    result_variants = ['result','ftr','FTR','match_result']
+
+    # find columns (actual names)
     home_col = _find_column(df, home_variants)
     away_col = _find_column(df, away_variants)
-    hg_col = _find_column(df, home_goals_variants)
-    ag_col = _find_column(df, away_goals_variants)
+    hg_col = _find_column(df, hg_variants)
+    ag_col = _find_column(df, ag_variants)
+    team_col = _find_column(df, team_variants)
+    opponent_col = _find_column(df, opponent_variants)
+    venue_col = _find_column(df, venue_variants)
+    gf_col = _find_column(df, gf_variants)
+    ga_col = _find_column(df, ga_variants)
     res_col = _find_column(df, result_variants)
 
-    rename_map = {}
-    if home_col:
-        rename_map[home_col] = 'home'
-    if away_col:
-        rename_map[away_col] = 'away'
-    if hg_col:
-        rename_map[hg_col] = 'home_goals'
-    if ag_col:
-        rename_map[ag_col] = 'away_goals'
-    if res_col:
-        rename_map[res_col] = 'result'
+    # CASE A: already match-centric (home/away present) OR Home Team / Away Team from Excel
+    if home_col and away_col:
+        df = df.rename(columns={home_col: 'home', away_col: 'away'})
+        if hg_col:
+            df = df.rename(columns={hg_col: 'home_goals'})
+        if ag_col:
+            df = df.rename(columns={ag_col: 'away_goals'})
+        if res_col:
+            df = df.rename(columns={res_col: 'result'})
 
-    if rename_map:
-        df = df.rename(columns=rename_map)
+    # CASE B: team-centric (your matches_full.csv): 'team', 'opponent', 'venue' and 'gf','ga'
+    elif team_col and opponent_col and venue_col and (gf_col or ga_col):
+        # ensure gf/ga present - use gf/ga names we found
+        if not gf_col or not ga_col:
+            raise KeyError("Found team/opponent/venue but missing gf/ga columns. Available columns: " + str(cols))
 
-    # compute 'result' if goals exist but result doesn't
-    if ('home_goals' in df.columns) and ('away_goals' in df.columns) and ('result' not in df.columns):
-        def r(row):
+        # standardize column names
+        df = df.rename(columns={
+            team_col: 'team',
+            opponent_col: 'opponent',
+            venue_col: 'venue',
+            gf_col: 'gf',
+            ga_col: 'ga'
+        })
+
+        # create home/away and goals per match
+        homes = []
+        aways = []
+        home_goals = []
+        away_goals = []
+        for i, row in df.iterrows():
+            venue_flag = _is_home_text(row.get('venue'))
+            # if venue text explicitly indicates Home -> team is home
+            if venue_flag is True:
+                home = row['team']
+                away = row['opponent']
+                hg = row['gf']
+                ag = row['ga']
+            elif venue_flag is False:
+                # team is away
+                home = row['opponent']
+                away = row['team']
+                # gf is goals for 'team' (away), so swap
+                hg = row['ga']
+                ag = row['gf']
+            else:
+                # unknown venue: assume 'team' is home (best-effort) but mark it
+                home = row['team']
+                away = row['opponent']
+                hg = row['gf']
+                ag = row['ga']
+
+            homes.append(home)
+            aways.append(away)
+            # ensure numeric
             try:
-                if int(row['home_goals']) > int(row['away_goals']): return 'H'
-                if int(row['home_goals']) < int(row['away_goals']): return 'A'
+                home_goals.append(float(hg) if not pd.isna(hg) else np.nan)
+            except Exception:
+                home_goals.append(np.nan)
+            try:
+                away_goals.append(float(ag) if not pd.isna(ag) else np.nan)
+            except Exception:
+                away_goals.append(np.nan)
+
+        df['home'] = homes
+        df['away'] = aways
+        df['home_goals'] = home_goals
+        df['away_goals'] = away_goals
+
+        # compute 'result' from goals when possible
+        def res_from_goals(r):
+            try:
+                if pd.isna(r['home_goals']) or pd.isna(r['away_goals']):
+                    return np.nan
+                if float(r['home_goals']) > float(r['away_goals']): return 'H'
+                if float(r['home_goals']) < float(r['away_goals']): return 'A'
                 return 'D'
             except Exception:
                 return np.nan
-        df['result'] = df.apply(r, axis=1)
+        df['result'] = df.apply(res_from_goals, axis=1)
 
-    # final check: we must have 'home' and 'away' for features/training
-    if 'home' not in df.columns or 'away' not in df.columns:
-        # helpful error: list available columns so user can see what's wrong
-        available = list(df.columns)
+    else:
+        # failed to auto-detect either format
         raise KeyError(
-            "Required columns 'home' and 'away' not found after auto-detection. "
-            f"Available columns: {available}. "
-            "If your file uses different column names, add them to the detection lists in basic_prep()."
+            "Auto-detection failed. Required match-level columns not found. "
+            f"Available columns: {cols}. "
+            "This app expects either match-centric columns like 'Home Team'/'Away Team' or team-centric 'team','opponent','venue','gf','ga'."
         )
 
-    # drop rows with missing team names
-    df = df.dropna(subset=['home','away']).reset_index(drop=True)
+    # final cleanup: ensure 'home' and 'away' exist and drop rows missing them
+    if 'home' not in df.columns or 'away' not in df.columns:
+        raise KeyError("After normalization, 'home' and 'away' are still missing. Available cols: " + str(list(df.columns)))
 
+    df = df.dropna(subset=['home', 'away']).reset_index(drop=True)
     return df
 
 def build_features(df):
-    """Encode teams to integer ids and create minimal features. Returns (X, df_with_features)."""
+    """
+    Build minimal features and label-encode teams.
+    Returns X (DataFrame of features) and df (dataframe with added ids).
+    """
     df = df.copy()
-
-    # ensure basic_prep has been applied (home/away present)
     if 'home' not in df.columns or 'away' not in df.columns:
-        raise KeyError("build_features expects columns 'home' and 'away'. Run basic_prep() first.")
+        raise KeyError("build_features expects 'home' and 'away' columns. Run basic_prep() first.")
 
-    # create a single team universe so encoding is consistent
-    teams = pd.Series(pd.concat([df['home'], df['away']]).astype(str).unique())
+    # unify teams universe
+    teams = pd.Series(pd.concat([df['home'].astype(str), df['away'].astype(str)]).unique())
     le = LabelEncoder().fit(teams)
 
-    # map teams - if a team in df is unknown to le, we fit on all present teams so this is safe
+    # map team names -> ids
     df['home_id'] = le.transform(df['home'].astype(str))
     df['away_id'] = le.transform(df['away'].astype(str))
 
-    # optional date -> month feature
+    # optional date -> month
     if 'date' in df.columns:
         df['date'] = pd.to_datetime(df['date'], errors='coerce')
         df['month'] = df['date'].dt.month.fillna(0).astype(int)
