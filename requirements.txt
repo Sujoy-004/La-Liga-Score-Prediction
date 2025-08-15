@@ -4,7 +4,3 @@ numpy
 scikit-learn
 plotly
 openpyxl
-xlrd
-matplotlib
-seaborn
-joblib
