@@ -53,13 +53,23 @@ st.markdown("""
 def load_and_preprocess_data():
     """Load and preprocess the data"""
     with st.spinner("Loading historical data..."):
-        # Load the historical data
+        # Load the historical data with error handling
         historical_data_url = "https://github.com/Sujoy-004/La-Liga-Score-Prediction/raw/main/matches_full.xlsx"
-        historical_data = pd.read_excel(historical_data_url)
+        try:
+            historical_data = pd.read_excel(historical_data_url)
+        except Exception as e:
+            st.error(f"Error loading historical data: {str(e)}")
+            # Fallback option if needed
+            raise e
         
-        # Load the future fixtures data
+        # Load the future fixtures data with error handling
         fixtures_data_url = "https://github.com/Sujoy-004/La-Liga-Score-Prediction/raw/main/la-liga-2025-UTC.xlsx"
-        fixtures_data = pd.read_excel(fixtures_data_url)
+        try:
+            fixtures_data = pd.read_excel(fixtures_data_url)
+        except Exception as e:
+            st.error(f"Error loading fixtures data: {str(e)}")
+            # Fallback option if needed
+            raise e
     
     # Clean column names
     def clean_cols(df):
@@ -411,19 +421,83 @@ def main():
     # Header
     st.markdown('<div class="main-header">⚽ La Liga Score Prediction</div>', unsafe_allow_html=True)
     
-    # Load data
-    try:
-        historical_data, fixtures_data, team_mapping = load_and_preprocess_data()
-        features_df, matches_df = engineer_features(historical_data)
-        models, val_accuracies, best_model, best_model_name, model_features = train_models(features_df)
+    # Initialize session state for expensive computations
+    if 'data_loaded' not in st.session_state:
+        try:
+            with st.spinner("🔄 Loading and preprocessing data..."):
+                historical_data, fixtures_data, team_mapping = load_and_preprocess_data()
+                st.session_state.historical_data = historical_data
+                st.session_state.fixtures_data = fixtures_data
+                st.session_state.team_mapping = team_mapping
+                st.session_state.data_loaded = True
+        except Exception as e:
+            st.error(f"Failed to load data: {str(e)}")
+            st.stop()
+    else:
+        historical_data = st.session_state.historical_data
+        fixtures_data = st.session_state.fixtures_data
+        team_mapping = st.session_state.team_mapping
+    
+    # Initialize session state for feature engineering
+    if 'features_ready' not in st.session_state:
+        try:
+            with st.spinner("🔧 Engineering features..."):
+                features_df, matches_df = engineer_features(historical_data)
+                st.session_state.features_df = features_df
+                st.session_state.matches_df = matches_df
+                st.session_state.features_ready = True
+        except Exception as e:
+            st.error(f"Failed to engineer features: {str(e)}")
+            st.stop()
+    else:
+        features_df = st.session_state.features_df
+        matches_df = st.session_state.matches_df
+    
+    # Initialize session state for model training
+    if 'models_trained' not in st.session_state:
+        try:
+            with st.spinner("🤖 Training machine learning models..."):
+                models, val_accuracies, best_model, best_model_name, model_features = train_models(features_df)
+                st.session_state.models = models
+                st.session_state.val_accuracies = val_accuracies
+                st.session_state.best_model = best_model
+                st.session_state.best_model_name = best_model_name
+                st.session_state.model_features = model_features
+                st.session_state.models_trained = True
+        except Exception as e:
+            st.error(f"Failed to train models: {str(e)}")
+            st.stop()
+    else:
+        models = st.session_state.models
+        val_accuracies = st.session_state.val_accuracies
+        best_model = st.session_state.best_model
+        best_model_name = st.session_state.best_model_name
+        model_features = st.session_state.model_features
         
         # Sidebar
-        st.sidebar.markdown("## Model Performance")
+        st.sidebar.markdown("## 📊 App Status")
+        if st.session_state.get('data_loaded', False):
+            st.sidebar.success("✅ Data loaded")
+        if st.session_state.get('features_ready', False):
+            st.sidebar.success("✅ Features ready")
+        if st.session_state.get('models_trained', False):
+            st.sidebar.success("✅ Models trained")
+        
+        st.sidebar.markdown("## 🏆 Model Performance")
         for name, accuracy in val_accuracies.items():
             color = "🟢" if name == best_model_name else "🔵"
             st.sidebar.metric(f"{color} {name}", f"{accuracy:.3f}")
         
-        st.sidebar.markdown(f"**Best Model:** {best_model_name}")
+        st.sidebar.markdown(f"**🥇 Best Model:** {best_model_name}")
+        
+        # Add app info
+        st.sidebar.markdown("## ℹ️ About")
+        st.sidebar.info(f"""
+        **Teams**: {len(team_options)}
+        **Historical Matches**: {len(features_df):,}
+        **Upcoming Fixtures**: {len(fixtures_data):,}
+        **Features Used**: {len(model_features)}
+        """)
         
         # Team options
         team_options = sorted(list(set(fixtures_data['home_team'].unique()) | set(fixtures_data['away_team'].unique())))
@@ -447,23 +521,25 @@ def main():
             if st.button("🔮 Predict Match Result", type="primary"):
                 if home_team != away_team:
                     try:
-                        # Convert date to pandas timestamp
-                        match_datetime = pd.Timestamp(match_date)
+                        with st.spinner("🔮 Making prediction..."):
+                            # Convert date to pandas timestamp
+                            match_datetime = pd.Timestamp(match_date)
+                            
+                            # Calculate features
+                            fixture_features = predict_fixture_features(
+                                home_team, away_team, match_datetime, matches_df, model_features
+                            )
+                            
+                            # Make prediction
+                            prediction_encoded = best_model.predict(fixture_features)[0]
+                            prediction_proba = best_model.predict_proba(fixture_features)[0]
+                            
+                            # Convert prediction
+                            result_mapping = {2: 'Home Win', 1: 'Draw', 0: 'Away Win'}
+                            predicted_result = result_mapping[prediction_encoded]
                         
-                        # Calculate features
-                        fixture_features = predict_fixture_features(
-                            home_team, away_team, match_datetime, matches_df, model_features
-                        )
-                        
-                        # Make prediction
-                        prediction_encoded = best_model.predict(fixture_features)[0]
-                        prediction_proba = best_model.predict_proba(fixture_features)[0]
-                        
-                        # Convert prediction
-                        result_mapping = {2: 'Home Win', 1: 'Draw', 0: 'Away Win'}
-                        predicted_result = result_mapping[prediction_encoded]
-                        
-                        # Display prediction
+                        # Display prediction (outside spinner)
+                        st.success("✅ Prediction completed successfully!")
                         st.markdown(f"""
                         <div class="prediction-card">
                             <h3>🎯 Match Prediction</h3>
@@ -485,7 +561,8 @@ def main():
                             st.metric("✈️ Away Win", f"{prediction_proba[0]:.1%}")
                             
                     except Exception as e:
-                        st.error(f"Error making prediction: {str(e)}")
+                        st.error(f"❌ Error making prediction: {str(e)}")
+                        st.info("💡 Please try with different teams or check back later. Make sure both teams have sufficient historical data.")
                 else:
                     st.warning("Please select different teams for home and away.")
         
@@ -509,8 +586,8 @@ def main():
                 )
             
             if st.button("🔮 Predict All Fixtures", type="primary"):
-                with st.spinner("Predicting all fixtures..."):
-                    try:
+                try:
+                    with st.spinner("🔄 Filtering fixtures..."):
                         # Filter fixtures
                         filtered_fixtures = fixtures_data.copy()
                         
@@ -527,41 +604,55 @@ def main():
                                 (filtered_fixtures['date'].dt.date <= end_date)
                             ]
                         
-                        # Make predictions for filtered fixtures
-                        predictions = []
-                        probabilities = []
-                        
-                        progress_bar = st.progress(0)
-                        total_fixtures = len(filtered_fixtures)
-                        
-                        for idx, (_, fixture) in enumerate(filtered_fixtures.iterrows()):
-                            try:
-                                fixture_features = predict_fixture_features(
-                                    fixture['home_team'], 
-                                    fixture['away_team'], 
-                                    fixture['date'], 
-                                    matches_df, 
-                                    model_features
-                                )
-                                
-                                pred_encoded = best_model.predict(fixture_features)[0]
-                                pred_proba = best_model.predict_proba(fixture_features)[0]
-                                
-                                result_mapping = {2: 'Home Win', 1: 'Draw', 0: 'Away Win'}
-                                predictions.append(result_mapping[pred_encoded])
-                                probabilities.append(max(pred_proba))
-                                
-                            except Exception as e:
-                                predictions.append('Error')
-                                probabilities.append(0.0)
+                        if len(filtered_fixtures) == 0:
+                            st.warning("⚠️ No fixtures found with the selected filters. Please adjust your selection.")
+                            st.stop()
+                    
+                    # Make predictions for filtered fixtures
+                    st.info(f"🎯 Predicting {len(filtered_fixtures)} fixtures...")
+                    predictions = []
+                    probabilities = []
+                    
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    total_fixtures = len(filtered_fixtures)
+                    
+                    for idx, (_, fixture) in enumerate(filtered_fixtures.iterrows()):
+                        try:
+                            status_text.text(f'Processing fixture {idx + 1}/{total_fixtures}: {fixture["home_team"]} vs {fixture["away_team"]}')
                             
-                            progress_bar.progress((idx + 1) / total_fixtures)
+                            fixture_features = predict_fixture_features(
+                                fixture['home_team'], 
+                                fixture['away_team'], 
+                                fixture['date'], 
+                                matches_df, 
+                                model_features
+                            )
+                            
+                            pred_encoded = best_model.predict(fixture_features)[0]
+                            pred_proba = best_model.predict_proba(fixture_features)[0]
+                            
+                            result_mapping = {2: 'Home Win', 1: 'Draw', 0: 'Away Win'}
+                            predictions.append(result_mapping[pred_encoded])
+                            probabilities.append(max(pred_proba))
+                            
+                        except Exception as e:
+                            st.warning(f"⚠️ Could not predict {fixture['home_team']} vs {fixture['away_team']}: {str(e)}")
+                            predictions.append('Error')
+                            probabilities.append(0.0)
                         
-                        # Add predictions to dataframe
-                        filtered_fixtures['predicted_result'] = predictions
-                        filtered_fixtures['confidence'] = probabilities
+                        progress_bar.progress((idx + 1) / total_fixtures)
+                    
+                    # Clear progress indicators
+                    status_text.empty()
+                    progress_bar.empty()
+                    
+                    # Add predictions to dataframe
+                    filtered_fixtures['predicted_result'] = predictions
+                    filtered_fixtures['confidence'] = probabilities
                         
                         # Display results
+                        st.success("✅ All predictions completed!")
                         st.markdown("### 🎯 Fixture Predictions")
                         
                         display_df = filtered_fixtures[['date', 'home_team', 'away_team', 'predicted_result', 'confidence']].copy()
@@ -592,7 +683,12 @@ def main():
                             st.metric("Predicted Away Wins", away_wins)
                         
                     except Exception as e:
-                        st.error(f"Error predicting fixtures: {str(e)}")
+                        st.error(f"❌ Error predicting fixtures: {str(e)}")
+                        st.info("💡 Please try again or contact support if the issue persists.")
+                
+                except Exception as e:
+                    st.error(f"❌ Error processing fixtures: {str(e)}")
+                    st.info("💡 Please check your selections and try again.")
         
         with tab3:
             st.markdown('<div class="sub-header">Model Insights & Performance</div>', unsafe_allow_html=True)
