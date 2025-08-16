@@ -1,6 +1,14 @@
+# Streamlit UI
 streamlit
+# Data handling
 pandas
 numpy
+# ML
 scikit-learn
+xgboost
+lightgbm
+# Visualization
 matplotlib
 seaborn
+# Excel engine
+openpyxl
