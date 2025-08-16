@@ -8,6 +8,10 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+# Optional imports for other models
+import xgboost as xgb
+import lightgbm as lgb
+
 # ---------------------------------------------------
 # STREAMLIT APP CONFIG
 # ---------------------------------------------------
@@ -22,7 +26,7 @@ st.write("Predict match results using ML models retrained every time.")
 @st.cache_data
 def load_data():
     url = "https://raw.githubusercontent.com/Sujoy-004/La-Liga-Score-Prediction/main/matches_full.xlsx"
-    df = pd.read_excel(url)
+    df = pd.read_excel(url, engine="openpyxl")  # explicitly specify engine for Streamlit Cloud
     return df
 
 df = load_data()
@@ -56,17 +60,25 @@ X_train, X_test, y_train, y_test = train_test_split(
 )
 
 # ---------------------------------------------------
-# MODEL TRAINING
+# MODEL SELECTION + TRAINING
 # ---------------------------------------------------
 st.subheader("Training Model...")
 
-model = RandomForestClassifier(n_estimators=200, random_state=42)
+model_choice = st.selectbox("Choose a model:", ["RandomForest", "XGBoost", "LightGBM"])
+
+if model_choice == "RandomForest":
+    model = RandomForestClassifier(n_estimators=200, random_state=42)
+elif model_choice == "XGBoost":
+    model = xgb.XGBClassifier(use_label_encoder=False, eval_metric='mlogloss', random_state=42)
+else:
+    model = lgb.LGBMClassifier(random_state=42)
+
 model.fit(X_train, y_train)
 
 y_pred = model.predict(X_test)
 acc = accuracy_score(y_test, y_pred)
 
-st.success(f"✅ Model trained successfully! Accuracy: {acc:.2f}")
+st.success(f"✅ {model_choice} trained successfully! Accuracy: {acc:.2f}")
 
 # ---------------------------------------------------
 # MODEL EVALUATION
