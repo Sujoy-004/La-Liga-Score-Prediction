@@ -17,6 +17,8 @@ This project aims to **predict match outcomes for the La Liga 2025-26 season** u
 
 ***
 
+# App Link : https://la-liga-score-prediction-sujoydas.streamlit.app/
+
 ## Features
 
 - Cell-by-cell code structure compatible with **Google Colab**—no user-defined functions.
