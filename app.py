@@ -162,14 +162,15 @@ def create_simplified_features(historical_data):
                 result = match['result']
                 
                 # Get historical data for both teams up to this match date
-                home_history = season_matches[
-                    (season_matches['team'] == home_team) & 
-                    (season_matches['date'] < match_date)
-                ]
-                away_history = season_matches[
-                    (season_matches['team'] == away_team) & 
-                    (season_matches['date'] < match_date)
-                ]
+                home_history = matches_df[
+                    (matches_df['team'] == home_team) & 
+                    (matches_df['date'] < match_date)
+                ].sort_values('date').tail(10)
+                
+                away_history = matches_df[
+                    (matches_df['team'] == away_team) & 
+                    (matches_df['date'] < match_date)
+                ].sort_values('date').tail(10)
                 
                 # Calculate simple features
                 home_goals_avg = home_history['gf'].mean() if len(home_history) > 0 else 1.5
@@ -217,7 +218,7 @@ def create_simplified_features(historical_data):
         features_df = pd.DataFrame(features_list)
         
         # Target encoding
-        target_mapping = {'W': 2, 'D': 1, 'L': 0}
+        target_mapping = {'W': 1, 'D': 0, 'L': 0}
         features_df['target'] = features_df['result'].map(target_mapping)
         
         return features_df
@@ -245,7 +246,7 @@ def train_simplified_model(features_df):
         y_val = features_df.loc[val_mask, 'target']
         
         # Use only Random Forest for speed
-        model = RandomForestClassifier(n_estimators=50, random_state=42, n_jobs=-1)
+        model = RandomForestClassifier(n_estimators=50, random_state=42, n_jobs=-1, class_weight='balanced')
         model.fit(X_train, y_train)
         
         # Calculate accuracy
@@ -335,10 +336,25 @@ def predict_match(home_team, away_team, model, model_features, historical_data):
         feature_df = pd.DataFrame([features])[model_features].fillna(0)
         
         # Make prediction
-        prediction = model.predict(feature_df)[0]
         probabilities = model.predict_proba(feature_df)[0]
+        p_home = probabilities[1]
+        p_not_home = probabilities[0]
         
-        return prediction, probabilities, None
+        if p_home >= 0.65:
+            prediction = "Home Win"
+        else:
+            # Decide between Draw and Away Win
+            goal_diff = home_stats['goals_avg'] - away_stats['goals_avg']
+            conceded_diff = away_stats['conceded_avg'] - home_stats['conceded_avg']
+            
+            score = 0.6 * goal_diff + 0.4 * conceded_diff
+            
+            if score > 0.2:
+                prediction = "Away Win"
+            else:
+                prediction = "Draw"
+        
+        return prediction, (p_home, p_not_home), None
         
     except Exception as e:
         return None, None, str(e)
@@ -442,8 +458,16 @@ def main():
                     st.error(f"❌ Error making prediction: {error}")
                 else:
                     # Convert prediction
-                    result_mapping = {2: 'Home Win', 1: 'Draw', 0: 'Away Win'}
-                    predicted_result = result_mapping[prediction_encoded]
+                    predicted_result = prediction_encoded
+                    p_home = prediction_proba[0]
+                    
+                    # Calculate confidence level
+                    if p_home >= 0.75:
+                        confidence_label = "High"
+                    elif p_home >= 0.60:
+                        confidence_label = "Medium"
+                    else:
+                        confidence_label = "Low"
                     
                     # Display prediction
                     st.success("✅ Prediction completed successfully!")
@@ -452,20 +476,19 @@ def main():
                         <h3>🎯 Match Prediction</h3>
                         <h2 style="color: #FF6B35;">{home_team} vs {away_team}</h2>
                         <h1 style="color: #2E86AB;">{predicted_result}</h1>
-                        <p><strong>Confidence:</strong> {max(prediction_proba):.1%}</p>
+                        <p><strong>Home Win Confidence:</strong> {p_home:.1%}</p>
+                        <p><strong>Confidence Level:</strong> {confidence_label}</p>
                     </div>
                     """, unsafe_allow_html=True)
                     
                     # Probability breakdown
                     st.markdown("### 📈 Probability Breakdown")
-                    col1, col2, col3 = st.columns(3)
+                    col1, col2 = st.columns(2)
                     
                     with col1:
-                        st.metric("🏠 Home Win", f"{prediction_proba[2]:.1%}")
+                        st.metric("🏠 Home Win", f"{p_home:.1%}")
                     with col2:
-                        st.metric("🤝 Draw", f"{prediction_proba[1]:.1%}")
-                    with col3:
-                        st.metric("✈️ Away Win", f"{prediction_proba[0]:.1%}")
+                        st.metric("🚫 Not Home Win", f"{prediction_proba[1]:.1%}")
             else:
                 st.warning("Please select different teams for home and away.")
     
@@ -532,9 +555,8 @@ def main():
                             predictions.append('Error')
                             probabilities.append(0.0)
                         else:
-                            result_mapping = {2: 'Home Win', 1: 'Draw', 0: 'Away Win'}
-                            predictions.append(result_mapping[pred_encoded])
-                            probabilities.append(max(pred_proba))
+                            predictions.append(pred_encoded)
+                            probabilities.append(pred_proba[0])
                         
                         progress_bar.progress((idx + 1) / len(filtered_fixtures))
                     
