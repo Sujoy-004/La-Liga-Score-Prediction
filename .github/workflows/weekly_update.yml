@@ -1,0 +1,41 @@
+name: Weekly ML Pipeline Update
+
+on:
+  schedule:
+    - cron: '0 0 * * 2' # Every Tuesday at 00:00 UTC
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  update-model:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fetch Latest Data
+        env:
+          FOOTBALL_API_KEY: ${{ secrets.FOOTBALL_API_KEY }}
+        run: python -m src.pipeline.fetcher
+
+      - name: Retrain Model
+        run: python src/pipeline/retrain.py
+
+      - name: Commit and Push Changes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/la_liga.db models/latest_model.pkl last_run_summary.md
+          git commit -m "chore: automated weekly data fetch and model retrain [skip ci]" || echo "No changes to commit"
+          git push

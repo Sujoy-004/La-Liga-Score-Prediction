@@ -1,9 +1,12 @@
-streamlit
+dash
+dash-bootstrap-components
+gunicorn
 pandas
 numpy
 scikit-learn
+xgboost
+lightgbm
 openpyxl
 fastapi
 uvicorn
-pydantic
-python-multipart
+joblib

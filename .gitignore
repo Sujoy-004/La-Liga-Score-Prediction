@@ -1,16 +1,9 @@
-# Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.venv
-venv/
-env/
-
-# Node.js
-node_modules/
-.next/
-
-# Mythos-GSD-Graphify
-graphify-out/cache/
-# Note: Root _brain/ and graphify-out/ are tracked
+.ipynb_checkpoints/
+*.html
+graphify-out/
+_brain/
+.gemini/
+data/*.xlsx
+*.png
+*.webp
