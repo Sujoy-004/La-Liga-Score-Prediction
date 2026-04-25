@@ -1,11 +1,10 @@
-# ⚽ La Liga Match Outcome Predictor
+# ⚽ La Liga Deep Analytics Engine
+[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
+[![v0.6.0](https://img.shields.io/badge/version-v0.6.0-gold.svg)](https://github.com/Sujoy-004/La-Liga-Score-Prediction)
 
-**Status:** ![Sovereignty](https://img.shields.io/badge/Protocol-Sovereign-orange) ![Version](https://img.shields.io/badge/Version-0.3.0-blue)
-**Authority:** Rewired Senior Architect Protocol (Mythos-GSD-Graphify)
+A production-grade, full-stack machine learning system for La Liga match forecasting. This platform integrates automated data ingestion, calibrated ensemble modeling, and a professional interactive dashboard.
 
----
-
-### 🏗️ Project Structure
+## 🏗️ Project Structure
 ```text
 /src
   ├── api.py           # FastAPI Production Service
@@ -36,22 +35,4 @@
 4. Launch the Dashboard: `python -m src.Dashboard`.
 
 ---
-
-## 🧠 ML Pipeline Logic (Phase 2)
-- **Model**: Calibrated Stacked Ensemble (RF + XGB + LGBM).
-- **Features**: 7-game rolling averages + Venue-specific form + H2H Dynamics.
-- **Inference**: Dynamic probability thresholding (0.55 floor).
-
----
-
-## 📈 Performance Tracking
-| Metric | Value |
-| :--- | :--- |
-| **Cross-Val Accuracy** | 57.35% |
-| **Brier Score** | 0.2370 |
-| **Inference Time** | ~95ms |
-| **Training Time** | ~6.2s |
-
----
-
-**Built with 💡 by Antigravity | Senior Architect**
+*Maintained by Sujoy-004*
