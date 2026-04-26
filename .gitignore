@@ -5,5 +5,5 @@ graphify-out/
 _brain/
 .gemini/
 data/*.xlsx
-*.png
-*.webp
+!assets/*.png
+!assets/*.webp

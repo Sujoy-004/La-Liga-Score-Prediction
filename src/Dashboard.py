@@ -14,7 +14,7 @@ server = app.server
 
 # Load Data on Startup (for dropdowns and radar)
 historical_data, _ = get_historical_data()
-all_teams = sorted(historical_data['home_team'].unique())
+all_teams = sorted(historical_data['team'].unique())
 
 # API Configuration
 API_BASE_URL = "http://127.0.0.1:8000"
@@ -145,4 +145,4 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=7860)
     args = parser.parse_args()
-    app.run_server(host='0.0.0.0', port=args.port, debug=False)
+    app.run(host='0.0.0.0', port=args.port, debug=False)
