@@ -1,0 +1,26 @@
+{
+  "title": "La Liga Tactical Sentinel",
+  "panels": [
+    {
+      "title": "API Latency (p95)",
+      "type": "graph",
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))" }
+      ]
+    },
+    {
+      "title": "Model Prediction Throughput",
+      "type": "stat",
+      "targets": [
+        { "expr": "sum(rate(http_requests_total{handler='/predict'}[1m]))" }
+      ]
+    },
+    {
+      "title": "In-Play WebSocket Traffic",
+      "type": "graph",
+      "targets": [
+        { "expr": "sum(rate(http_requests_total{handler='/ws/pulse'}[5m]))" }
+      ]
+    }
+  ]
+}

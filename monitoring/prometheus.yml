@@ -1,0 +1,8 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: 'la_liga_api'
+    static_configs:
+      - targets: ['localhost:8002']
+    metrics_path: '/metrics'

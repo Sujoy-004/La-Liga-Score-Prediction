@@ -4,6 +4,8 @@ from sklearn.ensemble import RandomForestClassifier, VotingClassifier
 from sklearn.calibration import CalibratedClassifierCV
 from xgboost import XGBClassifier
 import lightgbm as lgb
+import shap
+from typing import List, Tuple
 
 def clean_cols(df):
     df.columns = df.columns.str.lower().str.replace(' ', '_').str.replace('[^a-z0-9_]', '', regex=True)
@@ -151,7 +153,7 @@ def calculate_team_stats(team_name, historical_data, is_home=True):
     
     return {'goals_avg': goals_avg, 'conceded_avg': conceded_avg, 'recent_wins': recent_wins, 'recent_points': recent_points, 'venue_stat': venue_stat}
 
-def predict_match(home_team, away_team, model, model_features, historical_data):
+def prepare_match_features(home_team, away_team, historical_data, model_features):
     home_stats = calculate_team_stats(home_team, historical_data, is_home=True)
     away_stats = calculate_team_stats(away_team, historical_data, is_home=False)
     
@@ -168,24 +170,60 @@ def predict_match(home_team, away_team, model, model_features, historical_data):
         'home_venue_goals_avg': home_stats['venue_stat'], 'away_venue_conceded_avg': away_stats['venue_stat']
     }
     
-    feature_df = pd.DataFrame([features])[model_features].fillna(0)
-    probabilities = model.predict_proba(feature_df)[0]
-    p_home = probabilities[1]
-    p_not_home = probabilities[0]
+    return pd.DataFrame([features])[model_features].fillna(0)
+
+def get_tactical_insights(home_team, away_team, historical_data) -> List[str]:
+    home_stats = calculate_team_stats(home_team, historical_data, is_home=True)
+    away_stats = calculate_team_stats(away_team, historical_data, is_home=False)
     
-    if p_home >= 0.55:
-        prediction = "Home Win"
-    else:
-        goal_diff = home_stats['goals_avg'] - away_stats['goals_avg']
-        conceded_diff = away_stats['conceded_avg'] - home_stats['conceded_avg']
-        score = 0.6 * goal_diff + 0.4 * conceded_diff
-        prediction = "Away Win" if score < -0.15 else "Draw"
-        
-    # Match Insights logic
+    h2h_matches = historical_data[((historical_data['team'] == home_team) & (historical_data['opponent'] == away_team)) | ((historical_data['team'] == away_team) & (historical_data['opponent'] == home_team))]
+    h2h_home_wins = ((h2h_matches['team'] == home_team) & (h2h_matches['result'] == 'W')).sum()
+    h2h_away_wins = ((h2h_matches['team'] == away_team) & (h2h_matches['result'] == 'W')).sum()
+
     insights = []
     if home_stats['venue_stat'] > 2.0:
         insights.append(f"FORTRESS: {home_team} is a Home Fortress (Avg {home_stats['venue_stat']:.1f} goals at home).")
     if h2h_away_wins > h2h_home_wins + 2:
         insights.append(f"BOGEY: {home_team} has 'Bogey Team' energy against {away_team} (H2H: {h2h_home_wins}-{h2h_away_wins}).")
+    
+    if not insights:
+        insights.append("Tactical stalemate expected in the midfield transition phase.")
+    return insights
+
+def predict_match(home_team, away_team, model, model_features, historical_data):
+    feature_df = prepare_match_features(home_team, away_team, historical_data, model_features)
+    probabilities = model.predict_proba(feature_df)[0]
+    p_home = float(probabilities[1])
+    p_not_home = float(probabilities[0])
+    
+    if p_home >= 0.55:
+        prediction = "Home Win"
+    else:
+        home_stats = calculate_team_stats(home_team, historical_data, is_home=True)
+        away_stats = calculate_team_stats(away_team, historical_data, is_home=False)
+        goal_diff = home_stats['goals_avg'] - away_stats['goals_avg']
+        conceded_diff = away_stats['conceded_avg'] - home_stats['conceded_avg']
+        score = 0.6 * goal_diff + 0.4 * conceded_diff
+        prediction = "Away Win" if score < -0.15 else "Draw"
         
-    return prediction, (p_home, p_not_home), insights
+    insights = get_tactical_insights(home_team, away_team, historical_data)
+        
+    # SHAP Attribution (Explainable AI)
+    try:
+        base_ensemble = getattr(model.calibrated_classifiers_[0], "estimator", getattr(model.calibrated_classifiers_[0], "base_estimator", None))
+        rf_model = base_ensemble.estimators_[0] 
+        explainer = shap.TreeExplainer(rf_model)
+        shap_values = explainer.shap_values(feature_df)
+        
+        if isinstance(shap_values, list): 
+            attr = shap_values[1][0]
+        elif len(shap_values.shape) == 3: 
+            attr = shap_values[0, :, 1]
+        else:
+            attr = shap_values[0]
+            
+        attribution = {feat: float(val) for feat, val in zip(model_features, attr)}
+    except Exception as e:
+        attribution = {"error": str(e)}
+
+    return prediction, (p_home, p_not_home), insights, attribution

@@ -10,3 +10,4 @@ openpyxl
 fastapi
 uvicorn
 joblib
+shap
