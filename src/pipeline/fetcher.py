@@ -14,8 +14,8 @@ HEADERS = {
 }
 
 def fetch_and_upsert():
-    if not os.getenv('API_KEY'):
-        print("Error: API_KEY not found in environment variables.")
+    if not os.getenv('FOOTBALL_API_KEY'):
+        print("Error: FOOTBALL_API_KEY not found in environment variables.")
         return
 
     # 1. Fetch Fixtures (Past 7 and Next 7 days)
