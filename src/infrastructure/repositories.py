@@ -22,6 +22,22 @@ class MatchRepository:
         conn.close()
         return df
 
+    def search_teams(self, query: str) -> List[str]:
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute("SELECT DISTINCT team FROM matches WHERE team LIKE ? LIMIT 5", (f"%{query}%",))
+        results = [row[0] for row in c.fetchall()]
+        conn.close()
+        return results
+
+    def get_all_teams(self) -> List[str]:
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute("SELECT DISTINCT team FROM matches")
+        results = [row[0] for row in c.fetchall()]
+        conn.close()
+        return results
+
 class MLModelRepository:
     def __init__(self, model_path: str):
         self.model_path = model_path

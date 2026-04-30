@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Header from "@/components/header";
 import Sidebar from "@/components/sidebar";
 import { motion, AnimatePresence } from "framer-motion";
@@ -11,10 +11,12 @@ import {
   ShieldAlert,
   ChevronDown,
   Trophy,
-  Zap
+  Zap,
+  BarChart3
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useQuery } from "@tanstack/react-query";
+import { useSearchParams } from "next/navigation";
 import { 
   BarChart, 
   Bar, 
@@ -37,6 +39,14 @@ export default function PredictorPage() {
   const [homeTeam, setHomeTeam] = useState("Real Madrid");
   const [awayTeam, setAwayTeam] = useState("Barcelona");
   const [isCalibrating, setIsCalibrating] = useState(false);
+  const searchParams = useSearchParams();
+
+  useEffect(() => {
+    const home = searchParams.get("home");
+    const away = searchParams.get("away");
+    if (home && teams.includes(home)) setHomeTeam(home);
+    if (away && teams.includes(away)) setAwayTeam(away);
+  }, [searchParams]);
 
   const { data: prediction, refetch, isFetching } = useQuery({
     queryKey: ["prediction", homeTeam, awayTeam],
@@ -122,30 +132,41 @@ export default function PredictorPage() {
                   exit={{ opacity: 0, scale: 0.95 }}
                   className="space-y-8"
                 >
-                  {/* Win Probability Bar */}
-                  <div className="glass p-8 rounded-3xl space-y-6">
-                    <div className="flex justify-between items-end">
+                  {/* Result Card */}
+                  <div className="glass p-8 rounded-3xl space-y-6 bg-gradient-to-br from-white/[0.03] to-transparent">
+                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                       <div className="space-y-1">
-                        <p className="text-sm font-bold text-slate-500 uppercase tracking-widest">Prediction Result</p>
-                        <h2 className="text-4xl font-black text-white">{prediction.prediction}</h2>
+                        <p className="text-[10px] font-black text-arctic-blue uppercase tracking-[0.2em]">Predicted Outcome</p>
+                        <h2 className="text-5xl font-black text-white tracking-tight">
+                          {prediction.prediction === "Home Win" ? homeTeam : awayTeam} <span className="text-slate-500">to win</span>
+                        </h2>
                       </div>
-                      <div className="text-right">
-                        <p className="text-sm font-bold text-slate-500 uppercase tracking-widest">Probability</p>
-                        <h2 className="text-4xl font-black text-arctic-blue">{prediction.probability_home_win}</h2>
+                      <div className="bg-arctic-blue/10 border border-arctic-blue/20 px-6 py-4 rounded-2xl text-center min-w-[140px]">
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Confidence</p>
+                        <h2 className="text-3xl font-black text-arctic-blue">
+                          {prediction.prediction === "Home Win" 
+                            ? prediction.probability_home_win 
+                            : `${(100 - parseFloat(prediction.probability_home_win)).toFixed(1)}%`}
+                        </h2>
                       </div>
                     </div>
 
-                    <div className="relative h-4 bg-white/5 rounded-full overflow-hidden border border-white/10">
-                      <motion.div 
-                        initial={{ width: 0 }}
-                        animate={{ width: prediction.probability_home_win }}
-                        className="absolute inset-y-0 left-0 bg-gradient-to-r from-arctic-blue to-arctic-blue-soft rounded-full shadow-[0_0_15px_rgba(59,130,246,0.5)]"
-                      />
-                    </div>
-                    
-                    <div className="flex justify-between text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                      <span>Home Win</span>
-                      <span>Draw / Away Win</span>
+                    <div className="space-y-3">
+                      <div className="relative h-3 bg-white/5 rounded-full overflow-hidden border border-white/10">
+                        <motion.div 
+                          initial={{ width: 0 }}
+                          animate={{ 
+                            width: prediction.prediction === "Home Win" 
+                              ? prediction.probability_home_win 
+                              : `${(100 - parseFloat(prediction.probability_home_win)).toFixed(1)}%` 
+                          }}
+                          className="absolute inset-y-0 left-0 bg-arctic-blue rounded-full shadow-[0_0_20px_rgba(59,130,246,0.4)]"
+                        />
+                      </div>
+                      <div className="flex justify-between text-[9px] font-black uppercase tracking-[0.15em] text-slate-500 px-1">
+                        <span>Win Probability Index</span>
+                        <span>100% Certainty</span>
+                      </div>
                     </div>
                   </div>
 

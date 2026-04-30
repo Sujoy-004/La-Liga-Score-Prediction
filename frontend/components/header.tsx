@@ -1,19 +1,104 @@
-"use client";
-
-import { Bell, Search, User } from "lucide-react";
-import { motion } from "framer-motion";
+import { useState, useEffect, useRef } from "react";
+import { Bell, Search, User, ShieldAlert, Target, X } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { useQuery } from "@tanstack/react-query";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 export default function Header() {
+  const [query, setQuery] = useState("");
+  const [showResults, setShowResults] = useState(false);
+  const searchRef = useRef<HTMLDivElement>(null);
+  const router = useRouter();
+
+  const { data: results, isFetching } = useQuery({
+    queryKey: ["search", query],
+    queryFn: async () => {
+      if (query.length < 2) return [];
+      const baseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8002";
+      try {
+        const res = await fetch(`${baseUrl}/search?q=${encodeURIComponent(query)}`);
+        if (!res.ok) return [];
+        const data = await res.json();
+        return Array.isArray(data) ? data : [];
+      } catch (e) {
+        return [];
+      }
+    },
+    enabled: query.length >= 2,
+  });
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
+        setShowResults(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
   return (
-    <header className="h-16 glass border-b px-8 flex items-center justify-between z-40 sticky top-0">
+    <header className="h-16 glass border-b px-8 flex items-center justify-between z-50 sticky top-0">
       <div className="flex items-center gap-4 flex-1">
-        <div className="relative group max-w-md w-full">
+        <div ref={searchRef} className="relative group max-w-md w-full">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-arctic-blue transition-colors" />
           <input 
             type="text" 
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setShowResults(true);
+            }}
+            onFocus={() => setShowResults(true)}
             placeholder="Search fixtures, teams, or insights..." 
             className="w-full bg-white/5 border border-white/10 rounded-full py-1.5 pl-10 pr-4 text-sm focus:outline-none focus:border-arctic-blue/50 focus:ring-4 ring-arctic-blue/5 transition-all"
           />
+          
+          <AnimatePresence>
+            {showResults && query.length >= 2 && (
+              <motion.div 
+                initial={{ opacity: 0, y: 10, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 10, scale: 0.98 }}
+                className="absolute top-full left-0 right-0 mt-2 glass-dark rounded-2xl border border-white/10 shadow-2xl overflow-hidden py-2"
+              >
+                {isFetching && (
+                  <div className="px-4 py-3 text-xs text-slate-500 flex items-center gap-2">
+                    <div className="w-2 h-2 bg-arctic-blue rounded-full animate-pulse" />
+                    Searching the archives...
+                  </div>
+                )}
+                
+                {!isFetching && results?.length === 0 && (
+                  <div className="px-4 py-4 text-center space-y-1">
+                    <p className="text-sm font-bold text-slate-400">No signals found</p>
+                    <p className="text-[10px] text-slate-600 uppercase tracking-widest">Refine your tactical query</p>
+                  </div>
+                )}
+
+                {!isFetching && results?.map((result: any, i: number) => (
+                  <button
+                    key={i}
+                    onClick={() => {
+                      router.push(result.url);
+                      setShowResults(false);
+                      setQuery("");
+                    }}
+                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-white/5 transition-colors text-left group"
+                  >
+                    <div className="p-1.5 bg-white/5 rounded-lg group-hover:bg-arctic-blue/20 transition-colors">
+                      {result.type === 'team' ? <ShieldAlert className="w-3.5 h-3.5 text-arctic-blue" /> : <Target className="w-3.5 h-3.5 text-loss" />}
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-white tracking-tight">{result.name}</p>
+                      <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{result.type}</p>
+                    </div>
+                  </button>
+                ))}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </div>
 

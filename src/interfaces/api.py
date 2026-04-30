@@ -52,10 +52,20 @@ def stats(team: str):
             "team": s.team_name,
             "rolling_gf": s.rolling_gf,
             "rolling_ga": s.rolling_ga,
-            "recent_results": s.recent_results
+            "recent_results": s.recent_results,
+            "tactical_stability": s.tactical_stability,
+            "stability_trend": s.stability_trend
         }
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+@app.get("/teams")
+def teams():
+    return match_repo.get_all_teams()
+
+@app.get("/search")
+def search(q: str):
+    return prediction_service.search_entities(q)
 
 @app.websocket("/ws/pulse")
 async def websocket_pulse(websocket: WebSocket):

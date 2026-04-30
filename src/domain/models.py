@@ -8,6 +8,8 @@ class TeamStats:
     rolling_gf: float
     rolling_ga: float
     recent_results: List[str]
+    tactical_stability: str = "High"
+    stability_trend: str = "Stable"
 
 @dataclass(frozen=True)
 class MatchPrediction:

@@ -1,5 +1,15 @@
 # CHANGELOG: La Liga Deep Analytics
 
+## [0.8.2] - 2026-04-27
+### Fixed
+- **Server Connectivity**: Restored backend (8002) and frontend (3000) services after detecting "Connection Refused" anomalies.
+- **Search Robustness**: Verified 'fixture' and 'team' search resolution patterns in the header.
+- **Search Hardening**: Refactored `search_entities` to validate team names against the database, preventing phantom fixtures and fixing casing issues.
+- **Fuzzy Matching**: Integrated `difflib` for robust team name resolution, handling misspellings and partial matches in fixture searches.
+- **Dynamic Metrics**: Replaced hard-coded "High" Tactical Stability with a real calculation based on goal variance (GF standard deviation).
+- **Trend Analysis**: Implemented a dynamic trend metric comparing recent form (last 3 matches) against historical rolling averages.
+- **API Hydration**: Fixed missing field mapping in the `/stats/{team}` endpoint to ensure frontend correctly displays tactical stability and trend values.
+
 ## [0.6.0] - 2026-04-26
 ### Added
 - **Nyquist Verification Gates**: Added `scratch/test_upsert.py` for database integrity testing.
